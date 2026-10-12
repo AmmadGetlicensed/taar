@@ -457,7 +457,7 @@ are merged rather than lost.
 | `~/.config/taar/config` | which workspace is active |
 | your workspace folder | `.beads/` (todos), `projects.tsv`, README, agent instructions |
 
-Requirements: macOS, git, [Homebrew](https://brew.sh) (for Beads ≥ 1.2.2). Optional: `gh` (create
+Requirements: macOS, git, [Homebrew](https://brew.sh) (for Beads ≥ 1.3.1). Optional: `gh` (create
 workspaces and manage members), `jq` (member activity).
 
 ## Troubleshooting and FAQ

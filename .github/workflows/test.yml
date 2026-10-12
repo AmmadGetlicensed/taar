@@ -10,7 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Beads and shellcheck
-        run: brew install beads shellcheck
+        # brew update: the runner's package list can be stale and install an old Beads.
+        run: brew update >/dev/null && brew install beads shellcheck && bd version
       - name: Lint
         run: shellcheck -S warning bin/taar install.sh tests/run.sh
       - name: Test

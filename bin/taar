@@ -9,7 +9,7 @@
 # Must stay compatible with macOS bash 3.2 (no associative arrays, no ${var,,}).
 set -o pipefail
 
-TAAR_MIN_BD="1.2.2"
+TAAR_MIN_BD="1.3.1"
 
 # --- install location, config, workspace -----------------------------------
 
@@ -1034,9 +1034,13 @@ EOF
 cmd_upgrade() {
   [ -d "$TAAR_HOME/.git" ] || die "taar at $TAAR_HOME is not a git install; re-run the installer"
   local before; before=$TAAR_VERSION
-  # Upgrade along the current branch; an install pinned to a release tag moves to main.
+  # Upgrade along the current branch; an install pinned to a release tag moves to the
+  # repository's default branch.
   local ref; ref=$(git -C "$TAAR_HOME" rev-parse --abbrev-ref HEAD)
-  [ "$ref" = HEAD ] && ref=main
+  if [ "$ref" = HEAD ]; then
+    ref=$(git -C "$TAAR_HOME" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)
+    ref="${ref#origin/}"; ref="${ref:-main}"
+  fi
   [ -z "$(git -C "$TAAR_HOME" status --porcelain --untracked-files=no)" ] \
     || die "upgrade stopped: files in $TAAR_HOME were changed by hand (undo with: git -C $TAAR_HOME checkout .)"
   git -C "$TAAR_HOME" fetch -q origin || die "could not reach the taar repository; check your connection"
