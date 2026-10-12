@@ -236,8 +236,8 @@ EOF
 
 # --- workspace repo files ---------------------------------------------------
 
-write_workspace_files() {  # dir name
-  local d="$1" n="$2"
+write_workspace_files() {  # dir name join-url
+  local d="$1" n="$2" u="${3:-<workspace GitHub URL>}"
   printf '# repo-key\tproject-name\tdescription  (managed by `todo init`)\n' > "$d/projects.tsv"
   cat > "$d/README.md" <<EOF
 # $n
@@ -250,7 +250,7 @@ and AI agents, built on Beads. Todos live in the Beads database (synced via \`re
 
 \`\`\`bash
 curl -fsSL https://raw.githubusercontent.com/AmmadGetlicensed/taar/main/install.sh | bash
-todo workspace join <this repo's GitHub URL>
+todo workspace join $u
 \`\`\`
 
 Then \`todo help\`. Do not edit \`.beads/\` by hand.
@@ -345,7 +345,9 @@ ws_create() {
 
   mkdir -p "$dir" && cd "$dir" || die "cannot create $dir"
   git init -q -b main || die "git init failed"
-  write_workspace_files "$dir" "$name"
+  local join_url=""
+  if [ "$github" = Y ]; then join_url="https://github.com/$owner/$name"; else join_url="$url"; fi
+  write_workspace_files "$dir" "$name" "$join_url"
   git add -A && git commit -q -m "taar: create workspace $name" || die "git commit failed (is git user.name/email set?)"
 
   if [ "$github" = Y ]; then
@@ -447,7 +449,8 @@ ws_show() {
   fi
   echo "Workspace: $TODO_DIR"
   echo "Remote:    $(git -C "$TODO_DIR" remote get-url origin 2>/dev/null || echo 'none (this Mac only)')"
-  echo "Projects:  $(grep -vc '^#' "$REGISTRY" 2>/dev/null || echo 0)"
+  local n; n=$(grep -vc '^#' "$REGISTRY" 2>/dev/null)
+  echo "Projects:  ${n:-0}"
   [ -n "$CURRENT_PROJECT" ] && echo "Current:   $CURRENT_PROJECT"
   return 0
 }

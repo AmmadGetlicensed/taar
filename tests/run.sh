@@ -57,6 +57,8 @@ check  "workspace has agent docs" grep -q "todo prime" "$T/ws/CLAUDE.md"
 has    "config points at workspace" "workspace=$T/ws" cat "$XDG_CONFIG_HOME/taar/config"
 has    "todo database pushed to remote" "refs/dolt/data" git -C "$T/remote.git" for-each-ref
 has    "workspace show" "Remote: +$T/remote.git" todo workspace
+has    "workspace show counts projects once" "^Projects: +0$" sh -c "todo workspace | grep Projects"
+has    "workspace README has join URL" "todo workspace join $T/remote.git" cat "$T/ws/README.md"
 check_fails "create refuses non-empty dir" todo workspace create -y --name team --dir "$T/ws" --no-github --no-agents
 
 echo "-- projects"
