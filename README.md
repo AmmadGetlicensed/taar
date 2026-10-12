@@ -24,7 +24,8 @@ macOS only for now.
   6. [Everyday use](#6-everyday-use)
   7. [Working with AI agents](#7-working-with-ai-agents)
   8. [Managing members](#8-managing-members-owner)
-  9. [Upgrade and uninstall](#9-upgrade-and-uninstall)
+  9. [Several workspaces](#9-several-workspaces)
+  10. [Upgrade, check and uninstall](#10-upgrade-check-and-uninstall)
 - [Cheat sheet](#cheat-sheet)
 - [Command reference](#command-reference)
 - [How it works](#how-it-works)
@@ -360,7 +361,46 @@ taar remove sara-dev       # removes access (asks to confirm)
 - Activity uses each person's **git name** (from who created or claimed todos) and needs `jq`,
   which is built into recent macOS.
 
-### 9. Upgrade, check and uninstall
+### 9. Several workspaces
+
+You can belong to more than one workspace, for example one per team or a private one for
+yourself. Every workspace you create or join is remembered by name: the workspace name you gave
+`taar workspace create`, or for `taar workspace join` the repo's name (choose another with
+`--name`). One of them is **active**.
+
+```bash
+taar workspace list
+```
+```
+* acme-todos               /Users/sara/Development/acme-todos
+      https://github.com/ammad/acme-todos.git
+  personal                 /Users/sara/Development/personal
+      this Mac only
+```
+
+| To... | Run |
+|---|---|
+| switch the active workspace | `taar workspace use personal` |
+| use another workspace for one command | add `-W <name>` (or `--workspace <name>`): `taar list -W personal`, `taar create "..." -W personal`, `taar push -W personal` |
+| sync every workspace at once | `taar pull --all-workspaces` / `taar push --all-workspaces` |
+| rename one | `taar workspace rename personal me` |
+| stop tracking one (its folder is kept) | `taar workspace forget me` |
+| put a this-Mac-only workspace on GitHub | `taar workspace connect` (new private repo via `gh`) or `taar workspace connect <empty-repo-url>` |
+
+**Projects pick their workspace automatically.** Inside a project linked in a workspace other than
+the active one, taar uses that project's workspace and says so:
+
+```
+Workspace: personal (this project is linked there; active is acme-todos)
+```
+
+`-W` always wins. To link a project in a specific workspace, run `taar init -W <name>` inside it.
+`-W` works with every command except the `taar workspace` commands that choose or change
+workspaces themselves (`create`, `join`, `use`, `list`, `rename`, `forget`) and `--all-workspaces`.
+The `TAAR_WORKSPACE` environment variable does the same as `-W` for a whole shell session.
+(Beads' own `-w` means `--watch`, which is why taar's flag is a capital `-W`.)
+
+### 10. Upgrade, check and uninstall
 
 ```bash
 taar upgrade               # taar 0.4.1 -> 0.5.0
@@ -409,9 +449,14 @@ Your workspace repos are untouched. Projects linked with `taar init` keep their 
 | Command | What it does |
 |---|---|
 | `taar workspace create` | Create a team workspace (private GitHub repo). Flags: `--name`, `--dir`, `--prefix`, `--owner`, `--url`, `--no-github`, `--agents`/`--no-agents`, `-y` |
-| `taar workspace join <url>` | Join an existing workspace. Flags: `--dir`, `--agents`/`--no-agents`, `-y` |
-| `taar workspace` | Show the active workspace |
-| `taar workspace use <path>` | Switch to another workspace on this Mac |
+| `taar workspace join <url>` | Join an existing workspace. Flags: `--dir`, `--name`, `--agents`/`--no-agents`, `-y` |
+| `taar workspace` | Show the workspace used here (and why, if it is not the active one) |
+| `taar workspace list` | All workspaces on this Mac (`*` = active) |
+| `taar workspace use <name\|path>` | Switch the active workspace |
+| `taar workspace rename <name> <new>` / `forget <name>` | Rename / stop tracking a workspace (folder kept) |
+| `taar workspace connect [<url>]` | Put a this-Mac-only workspace on GitHub |
+| `-W`, `--workspace <name\|path>` | Use another workspace for one command (not for the workspace-choosing commands) |
+| `taar pull --all-workspaces` / `taar push --all-workspaces` | Sync every workspace |
 | `taar init` | Link the current git project. Flags: `--name`, `-d`, `--agent-files CLAUDE.md,AGENTS.md\|none`, `--share`/`--no-share`, `--keep-beads`, `-y` |
 | `taar projects` | List linked projects |
 | `taar members` | Who has access, pending invitations, activity |
@@ -471,6 +516,7 @@ are merged rather than lost.
 | `~/.taar/` | the taar tool (a git clone; `taar upgrade` updates it) |
 | `~/.local/bin/taar` | the command (a link into `~/.taar`) |
 | `~/.config/taar/config` | which workspace is active |
+| `~/.config/taar/workspaces` | the workspaces on this Mac, by name |
 | your workspace folder | `.beads/` (todos), `projects.tsv`, README, agent instructions |
 
 Requirements: macOS, git, [Homebrew](https://brew.sh) (for Beads ≥ 1.3.1). Optional: `gh` (create
@@ -497,8 +543,9 @@ created inside a linked project are tagged. Tag it yourself:
 
 **`taar push` failed.** Usually someone pushed first: run `taar pull`, then `taar push` again.
 
-**Can I have several workspaces?** Yes, for example one per team. Join or create each one, then
-switch with `taar workspace use <path>`.
+**Can I have several workspaces?** Yes, see [Several workspaces](#9-several-workspaces):
+`taar workspace list`, `taar workspace use <name>`, `-W <name>` for one command, and projects pick
+their own workspace automatically.
 
 **Can members be read-only?** Not on a personal GitHub account: everyone you invite can edit. Use a
 GitHub organisation for read-only access.

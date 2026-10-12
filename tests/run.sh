@@ -6,7 +6,7 @@
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-T=$(mktemp -d)
+T=$(cd "$(mktemp -d)" && pwd -P)   # canonical (macOS temp dirs sit behind the /var -> /private/var symlink)
 trap 'rm -rf "$T"' EXIT
 
 export HOME="$T/home"
@@ -284,6 +284,130 @@ printf '[{"id":7,"invitee":null,"created_at":"2026-10-12T09:00:00Z"}]' > "$T/gh/
 has    "members copes with an email invitation" "\\(by email\\)" env PATH="$gh_path" taar members
 git -C "$T/ws" remote set-url origin "$T/remote.git"
 has    "members needs a GitHub remote" "not on github.com" env PATH="$gh_path" taar members
+
+echo "-- several workspaces"
+check  "use a workspace by name" taar workspace use team
+has    "workspace list marks the active one" "^\* team " taar workspace list
+has    "workspace list shows every workspace" "solo" taar workspace list
+git init -q --bare "$T/other.git"
+check  "create a second team workspace" taar workspace create -y --name other --dir "$T/other" --url "$T/other.git" --no-agents
+mkdir -p "$T/op" && git -C "$T/op" init -q && git -C "$T/op" remote add origin https://github.com/acme/op.git
+check  "link a project in the second workspace" in_dir "$T/op" taar init -y --name op --agent-files none --share
+check  "create a todo in that project" in_dir "$T/op" taar create "Other team task" -q
+check  "switch the active workspace back" taar workspace use team
+has    "project picks its own workspace" "Other team task" in_dir "$T/op" taar list
+has    "notice names the project's workspace" "Workspace: other \(this project is linked there" in_dir "$T/op" taar list
+lacks  "active workspace does not show it" "Other team task" in_dir "$T/plain" taar list
+has    "-W by name" "Other team task" in_dir "$T/plain" taar list -W other
+has    "--workspace=name" "Other team task" in_dir "$T/plain" taar list --workspace=other
+has    "-W by folder" "Other team task" in_dir "$T/plain" taar list -W "$T/other"
+has    "-W unknown name explains" "no workspace named 'nosuch'" taar list -W nosuch
+check_fails "-W unknown name fails" taar list -W nosuch
+has    "-W without a value fails fast" "needs a value" no_hang taar list -W
+check  "create with -W from anywhere" in_dir "$T/plain" taar create "Made via flag" -W other -q
+has    "todo landed in the named workspace" "Made via flag" taar list -W other
+lacks  "and not in the active one" "Made via flag" in_dir "$T/plain" taar list
+has    "workspace show with -W explains" "chosen for this command" taar workspace -W other
+has    "workspace show in a project explains" "this project is linked in it" in_dir "$T/op" taar workspace
+has    "prime mentions other workspaces" "Other workspaces exist" taar prime
+check  "rename a workspace" taar workspace rename other team-b
+has    "renamed workspace works with -W" "Other team task" taar list -W team-b
+check_fails "old name no longer works" taar list -W other
+check_fails "rename to a taken name fails" taar workspace rename team-b team
+check  "a second folder with the same name" taar workspace create -y --name team-b --dir "$T/x/team-b" --no-github --no-agents
+has    "duplicate names get a suffix" "team-b-2" taar workspace list
+has    "pull in a Mac-only workspace explains" "on this Mac only" taar pull -W team-b-2
+check  "pull in a Mac-only workspace succeeds" taar pull -W team-b-2
+check  "forget a workspace" taar workspace forget team-b
+lacks  "forgotten workspace not listed" "team-b " taar workspace list
+check  "forgotten folder untouched" test -d "$T/other/.beads"
+check  "use it again by folder (re-registers)" taar workspace use "$T/other"
+has    "re-registered by folder name" "^\* other " taar workspace list
+check  "the active one (team-b-2) can be forgotten" taar workspace use team-b-2
+check  "forget the active workspace" taar workspace forget team-b-2
+has    "no active workspace afterwards" "no active workspace. Choose one" in_dir "$T/plain" taar list
+check  "choose an active workspace again" taar workspace use team
+git init -q --bare "$T/lonely.git"
+check  "Mac-only workspace" taar workspace create -y --name lonely --dir "$T/lonely" --no-github --no-agents
+check  "connect it to a remote" taar workspace connect "$T/lonely.git"
+has    "connected workspace pushed its todos" "refs/dolt/data" git -C "$T/lonely.git" for-each-ref
+check  "pull works after connect" taar pull
+check_fails "connect twice fails" taar workspace connect "$T/lonely.git"
+check  "back to team" taar workspace use team
+has    "pull --all-workspaces visits each" "== team .*|== other " sh -c "taar pull --all-workspaces 2>&1 | tr '\\n' ' '"
+check  "pull --all-workspaces succeeds" taar pull --all-workspaces
+check  "push --all-workspaces succeeds" taar push --all-workspaces
+taar workspace create -y --name gone --dir "$T/gone" --no-github --no-agents >/dev/null 2>&1
+mv "$T/gone" "$T/gone-moved"
+check  "back to team after creating gone" taar workspace use team
+has    "list flags a missing workspace" "missing \(taar workspace forget gone\)" taar workspace list
+check_fails "all-workspaces fails if one is missing" taar pull --all-workspaces
+has    "doctor notes the missing workspace" "missing workspace folder" taar doctor
+check  "forget the missing workspace" taar workspace forget gone
+mv "$XDG_CONFIG_HOME/taar/workspaces" "$T/workspaces.saved"
+has    "older setups: active workspace registered automatically" "^\* ws " taar workspace list
+mv "$T/workspaces.saved" "$XDG_CONFIG_HOME/taar/workspaces"
+
+echo "-- several workspaces: QA regressions"
+# 1. TAAR_WORKSPACE: relative paths and names, like -W
+mkdir -p "$T/envcheck"
+has    "relative TAAR_WORKSPACE syncs, not 'Mac only'" "Push complete" in_dir "$T" env TAAR_WORKSPACE=other taar push
+has    "TAAR_WORKSPACE accepts a relative folder" "Other team task" in_dir "$T" env TAAR_WORKSPACE=./other taar list
+has    "TAAR_WORKSPACE accepts a name" "Other team task" env TAAR_WORKSPACE=other taar list
+# 2. SSH host-alias remotes get a valid sync address
+git -C "$T/lonely" remote set-url origin github-acme:org/lonely.git
+check_fails "sync remote fixed for an SSH alias (offline is fine)" sh -c "taar push -W lonely 2>&1 | grep -q 'todo sync is not set up'"
+has    "SSH alias becomes git+ssh" "git\+ssh://github-acme/org/lonely" sh -c "cd '$T/lonely' && bd dolt remote list"
+git -C "$T/lonely" remote set-url origin "$T/lonely.git"
+check  "stale sync address is corrected" taar push -W lonely
+has    "sync address back to the folder remote" "git\+file://$T/lonely.git" sh -c "cd '$T/lonely' && bd dolt remote list"
+# 3. init refuses workspace folders
+check_fails "init inside another workspace's folder fails" in_dir "$T/other" taar init -y --agent-files none --no-share
+has    "init explains why" "is a taar workspace, not a project" in_dir "$T/other" taar init -y --agent-files none --no-share
+lacks  "workspace not added as a project" "github.com/.*/other" cat "$T/ws/projects.tsv"
+# 4. one registration per folder, however it is spelled
+check  "use by a non-canonical spelling" taar workspace use "$T/x/../other/"
+has    "no duplicate registration" "^1$" sh -c "taar workspace list | grep -c ' $T/other$'"
+has    "active marker matches" "^\* other " taar workspace list
+ln -s "$T/other" "$T/other-link"
+check  "use through a symlink" taar workspace use "$T/other-link"
+has    "symlink does not duplicate" "^1$" sh -c "taar workspace list | grep -c '^. other '"
+mkdir -p "$T/x"
+check  "create with a messy --dir" taar workspace create -y --name canon-test --dir "$T/x/../canon-test/" --no-github --no-agents
+check  "use it by its clean path" taar workspace use "$T/canon-test"
+has    "one registration for both spellings" "^1$" sh -c "taar workspace list | grep -c 'canon-test'"
+has    "stored canonically" "^canon-test	$T/canon-test$" cat "$XDG_CONFIG_HOME/taar/workspaces"
+check  "forget canon-test" taar workspace forget canon-test
+check  "back to team (canonical)" taar workspace use team
+# 5. init says which workspace it links in
+has    "init names the workspace" "workspace: other" in_dir "$T/op" taar init -y --agent-files none --no-share
+has    "init explains the project's own workspace" "already linked there" in_dir "$T/op" taar init -y --agent-files none --no-share
+# 6. -W parsing leaves text alone
+check  "a description that looks like --workspace is kept" in_dir "$T/plain" taar create "Doc flag" -d "--workspace=other" -q
+has    "description stored verbatim" "workspace=other" sh -c "taar show \$(taar list --json | python3 -I -c 'import json,sys; print([i[\"id\"] for i in json.load(sys.stdin) if i[\"title\"]==\"Doc flag\"][0])')"
+check  "a title of -W given with --title" in_dir "$T/plain" taar create --title -W -p low -q
+has    "title -W stored" " -W$" taar list
+has    "-- stops taar's option parsing" "no workspace named" taar list -W nosuch -- -W other
+# 7/8. -W where it cannot apply
+has    "-W rejected for workspace use" "does not apply" taar workspace use team -W other
+has    "-W rejected for workspace create" "does not apply" taar workspace create -y --name z --dir "$T/z" -W other
+check_fails "nothing created by the rejected command" test -e "$T/z"
+has    "-W and --all-workspaces conflict" "either -W or --all-workspaces" taar pull --all-workspaces -W other
+check  "forget leaves one: it becomes active" sh -c "
+  export XDG_CONFIG_HOME='$T/solo-cfg'; mkdir -p \"\$XDG_CONFIG_HOME/taar\"
+  printf 'a\t$T/ws\nb\t$T/other\n' > \"\$XDG_CONFIG_HOME/taar/workspaces\"
+  printf 'workspace=$T/other\n' > \"\$XDG_CONFIG_HOME/taar/config\"
+  taar workspace forget b | grep -q \"now 'a'\" && grep -q 'workspace=$T/ws' \"\$XDG_CONFIG_HOME/taar/config\""
+# join --name
+check  "join with a chosen name" taar workspace join "$T/other.git" --dir "$T/other-joined" --name team-b-mirror -y --no-agents
+has    "joined workspace has the chosen name" "^\* team-b-mirror " taar workspace list
+check  "back to team after join" taar workspace use team
+# connect fills in the README join URL
+check  "Mac-only workspace for README check" taar workspace create -y --name readme-ws --dir "$T/readme-ws" --no-github --no-agents
+git init -q --bare "$T/readme-ws.git"
+check  "connect it" taar workspace connect "$T/readme-ws.git"
+has    "README gets the join URL" "taar workspace join $T/readme-ws.git" cat "$T/readme-ws/README.md"
+check  "back to team after readme" taar workspace use team
 
 echo "-- installer"
 check  "installer syntax" bash -n "$ROOT/install.sh"
