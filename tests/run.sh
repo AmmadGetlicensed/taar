@@ -139,6 +139,43 @@ has    "JSON output keeps every title" "Document bd setup claude" sh -c "cd '$T/
 check  "legacy TODO_DIR in the environment is ignored" env TODO_DIR="$T/not-a-workspace" taar list
 has    "bad TAAR_WORKSPACE is named in the error" "TAAR_WORKSPACE=" env TAAR_WORKSPACE="$T/plain" taar list
 
+echo "-- taar speaks taar (no bd in Beads output)"
+BDWORD='(^|[^A-Za-z0-9_./-])bd([^A-Za-z0-9_./-]|$)'
+has    "stats hint names taar" "use 'taar list'" taar stats
+lacks  "stats has no bd" "$BDWORD" taar stats
+has    "stats in a project notes it covers every project" "cover every project" in_dir "$T/proj" taar stats
+has    "unknown command error names taar" 'unknown command "nosuch" for "taar"' taar nosuch
+check_fails "unknown command still fails" taar nosuch
+has    "command help shows taar usage" "taar list \\[flags\\]" taar list --help
+lacks  "command help has no bd" "$BDWORD" taar list --help
+lacks  "help <command> has no bd" "$BDWORD" taar help dep
+has    "help for taar's own commands" "taar workspace create" taar init --help
+lacks  "report commands have no bd" "$BDWORD" sh -c "taar types; taar statuses; taar config list; taar metrics; taar memories; taar kv"
+has    "missing todo hint names taar" "taar history" taar show nosuch-id
+check_fails "missing todo still fails" taar show nosuch-id
+for blocked in "dolt push" "setup claude" "bootstrap" "hooks install" "sync"; do
+  # shellcheck disable=SC2086
+  has "'$blocked' is blocked with a taar alternative" "not available in taar" taar $blocked
+done
+has    "doctor checks the setup" "Beads engine" taar doctor
+check  "doctor passes on a healthy workspace" taar doctor
+check  "create a todo whose title mentions bd" taar create "Fix bd list output" -q
+has    "list shows the title unchanged" "Fix bd list output" taar list --all
+has    "list piped shows the title unchanged" "Fix bd list output" sh -c "taar list --all | cat"
+BDT=$(taar list --all --json | python3 -I -c 'import json,sys; print([i["id"] for i in json.load(sys.stdin) if i["title"]=="Fix bd list output"][0])')
+has    "show keeps the title unchanged" "Fix bd list output" taar show "$BDT"
+has    "update echo keeps the title unchanged" "Fix bd list output" taar update "$BDT" -p low
+has    "delete preview hint names taar" "run: taar delete" taar delete "$BDT"
+check  "delete the bd-title todo" taar delete "$BDT" --force
+same_as_beads() {  # taar's output for a data view equals Beads' own (minus Beads' plugin tip)
+  local tip="💡 Tip: Install the beads plugin for automatic workflow context, or run 'bd setup claude' for CLI-only mode"
+  # shellcheck disable=SC2068
+  diff -B <(cd "$T/ws" && bd $@ 2>/dev/null | grep -vxF -- "$tip") <(cd "$T/ws" && taar $@ 2>/dev/null)
+}
+check  "list output identical to Beads (minus its tip)" same_as_beads list
+check  "ready output identical to Beads" same_as_beads ready
+check  "search output identical to Beads" same_as_beads search Demo
+
 echo "-- sync: a colleague joins"
 mkdir -p "$T/proj2" && git -C "$T/proj2" init -q && git -C "$T/proj2" remote add origin https://github.com/acme/second.git
 check  "init without sharing" in_dir "$T/proj2" taar init -y --name second --agent-files none --no-share

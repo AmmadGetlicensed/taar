@@ -989,6 +989,142 @@ cmd_prime() {
   fi
 }
 
+# --- Beads output: speak taar ----------------------------------------------
+
+# Beads command names (bd 1.3.x), used to recognise `bd <command>` references in its output.
+BD_COMMANDS="admin ado assign audit backup batch blocked bootstrap branch children close comment
+comments compact completion config conflicts context cook count create create-form defer delete dep
+diff doctor dolt duplicate duplicates edit epic events export federation find-duplicates flatten
+forget formula gate gc github gitlab graph heartbeat help history hooks human import info init
+init-safety jira kv label linear link lint list mail memories merge-slot metrics migrate
+migrate-personal mol note notion onboard orphans ping preflight prime priority promote provenance
+prune purge q query quickstart ready recall reclaim recompute-blocked remember rename rename-prefix
+reopen repo restore rules schema search serve set-state setup ship show sql stale state stats status
+statuses supersede swarm sync tag todo types unclaim undefer update upgrade vc version where worktree"
+
+# Rewrites Beads' wording to taar's: `bd <command>` (or a bd flag, "[", or a quoted "bd") becomes
+# `taar <command>`; any other stand-alone "bd" means the engine and becomes "Beads". IDs such as
+# bd-xyz and words containing "bd" are left alone. Only used on output that holds no todo content.
+# `speak_taar strict` is for output that may echo a todo title: only references in a command
+# position (line start, after a quote, backtick, "(", "$ " or ": ") change, and prose stays.
+speak_taar() {
+  awk -v strict="$([ "$1" = strict ] && echo 1)" -v cmds="$(printf '%s' "$BD_COMMANDS" | tr '\n' ' ')" '
+    BEGIN { n = split(cmds, c, " "); for (i = 1; i <= n; i++) known[c[i]] = 1 }
+    {
+      line = $0; out = ""
+      while ((p = index(line, "bd")) > 0) {
+        pre = substr(line, 1, p - 1); post = substr(line, p + 2)
+        prev = (p > 1) ? substr(pre, p - 1, 1) : ""
+        next1 = substr(post, 1, 1)
+        word = (prev !~ /[A-Za-z0-9_.\/-]/) && (next1 !~ /[A-Za-z0-9_.\/-]/)
+        if (word && strict)
+          word = (pre ~ /^[ \t]*$/) || prev == "\x27" || prev == "\"" || prev == "`" || prev == "(" ||
+                 (pre ~ /: +$/) || (pre ~ /\$ $/)
+        rep = "bd"
+        if (word) {
+          if (post ~ /^["\x27`]/ || post ~ /^ +(-|\[)/) rep = "taar"
+          else if (match(post, /^ +[a-z][a-z-]*/)) {
+            w = substr(post, 1, RLENGTH); gsub(/ /, "", w)
+            rep = (w in known) ? "taar" : "Beads"
+          } else rep = "Beads"
+          if (strict && rep == "Beads") rep = "bd"
+        }
+        out = out pre rep
+        line = post
+      }
+      print out line
+    }'
+}
+
+# Commands whose output shows todo content (titles, descriptions, notes). Their normal output is
+# passed through unchanged; only their error messages are rewritten.
+data_view() {
+  case "$1" in
+    list|ready|blocked|search|show|count|history|comments|children|graph|stale|lint|query|export| \
+    find-duplicates|duplicates|orphans|label|epic|todo) return 0 ;;
+  esac
+  return 1
+}
+
+# Commands that change todos and echo their titles back ("✓ Updated issue: x — <title>").
+echoes_titles() {
+  case "$1" in
+    create|q|update|close|reopen|delete|defer|undefer|assign|priority|tag|unclaim|reclaim|note| \
+    comment|promote|supersede|duplicate|set-state|state|link|rename|heartbeat) return 0 ;;
+  esac
+  return 1
+}
+
+# Beads setup and sync commands that taar manages itself; running them through taar would
+# fight with the workspace setup.
+blocked_command() {
+  local alt
+  case "$1" in
+    setup|onboard|hooks)        alt="use 'taar agents' (global) or 'taar init' (per project) for AI agent setup" ;;
+    bootstrap)                  alt="use 'taar workspace join <url>'" ;;
+    dolt|sync)                  alt="use 'taar pull' and 'taar push'" ;;
+    quickstart)                 alt="see 'taar help' and the README" ;;
+    rename-prefix|migrate|migrate-personal|init-safety|worktree|federation|serve|admin|completion)
+                                alt="this is a Beads maintenance command that taar does not support" ;;
+    *) return 1 ;;
+  esac
+  die "'$1' is not available in taar: $alt."
+}
+
+# --- commands: doctor -------------------------------------------------------
+
+cmd_doctor() {
+  local bad=0 v
+  ok()   { printf '  \342\234\223 %s\n' "$*"; }
+  fail() { printf '  \342\234\227 %s\n' "$*"; bad=1; }
+  note() { printf '  ! %s\n' "$*"; }
+
+  echo "taar $TAAR_VERSION ($TAAR_HOME)"
+  case ":$PATH:" in *":$(dirname "$(command -v taar 2>/dev/null || echo /none/x)"):"*) ok "taar is on your PATH" ;;
+    *) note "taar is not on your PATH in this shell (open a new terminal)" ;; esac
+  if command -v bd >/dev/null; then
+    v=$(bd_version)
+    if [ -n "$v" ] && version_ge "$v" "$TAAR_MIN_BD"; then ok "Beads engine $v"
+    else fail "Beads engine ${v:-unknown} is older than $TAAR_MIN_BD (brew upgrade beads)"; fi
+  else
+    fail "Beads engine not installed (brew install beads)"
+  fi
+
+  if [ -z "$TODO_DIR" ]; then
+    fail "no workspace yet (taar workspace create / taar workspace join <url>)"
+    return $bad
+  fi
+  if [ ! -d "$TODO_DIR/.beads" ] || [ ! -f "$TODO_DIR/projects.tsv" ]; then
+    fail "workspace $TODO_DIR is missing or not a taar workspace (taar workspace use <path>)"
+    return $bad
+  fi
+  ok "workspace $TODO_DIR"
+  if [ "$(stat -f %Lp "$TODO_DIR/.beads" 2>/dev/null)" = 700 ]; then ok "todo database permissions"
+  else note "todo database folder is readable by other users (chmod 700 $TODO_DIR/.beads)"; fi
+
+  local remote; remote=$(git -C "$TODO_DIR" remote get-url origin 2>/dev/null)
+  if [ -z "$remote" ]; then
+    note "no GitHub remote: todos stay on this Mac"
+  else
+    if GIT_TERMINAL_PROMPT=0 git -C "$TODO_DIR" ls-remote -q origin HEAD >/dev/null 2>&1; then ok "GitHub reachable ($remote)"
+    else fail "cannot reach $remote (offline, or no access? gh auth login)"; fi
+    if (cd "$TODO_DIR" && bd dolt remote list 2>/dev/null) | grep -q '^origin '; then ok "todo sync remote configured"
+    else fail "todo sync remote missing (cd $TODO_DIR && bd dolt remote add origin git+$remote --allow-git-origin)"; fi
+    if [ -n "$(git -C "$TODO_DIR" rev-list '@{u}..HEAD' 2>/dev/null)" ]; then note "project links not shared yet (taar push)"; fi
+  fi
+
+  local dupes markers
+  markers=$(grep -cE '^(<<<<<<<|=======|>>>>>>>)' "$REGISTRY" 2>/dev/null)
+  dupes=$(awk -F'\t' '!/^#/ && NF >= 2 {print $1}' "$REGISTRY" | sort | uniq -d | grep -c .)
+  if [ "${markers:-0}" -gt 0 ] || [ "${dupes:-0}" -gt 0 ]; then note "project list needs tidying (taar pull fixes it)"
+  else ok "project list ($(awk -F'\t' '!/^#/ && NF >= 2' "$REGISTRY" | grep -c .) linked)"; fi
+  [ -n "$CURRENT_PROJECT" ] && ok "current project: $CURRENT_PROJECT"
+
+  if grep -qsF "$GLOBAL_BEGIN" "$HOME/.claude/CLAUDE.md"; then ok "AI agent instructions installed"
+  else note "AI agents don't know about taar yet (taar agents)"; fi
+  return $bad
+}
+
 cmd_help() {
   cat <<EOF
 taar $TAAR_VERSION: shared team todos for people and AI agents, built on Beads
@@ -1023,8 +1159,10 @@ AI agents
   taar prime                 workflow context for agents (used by session hooks)
 
 Maintenance
+  taar doctor                check your setup (Beads, workspace, GitHub, sync, agents)
   taar upgrade               update taar
   taar version
+  taar help <command>        help for any command, e.g. taar help dep
 
 Inside a linked project, list/ready/search/count are scoped to it and create tags it.
 Any other subcommand is passed through to Beads, e.g. \`taar stats\`, \`taar dep add\`.
@@ -1062,13 +1200,34 @@ cmd_version() {
 
 # --- dispatch ---------------------------------------------------------------
 
+# Is this one of taar's own commands (as opposed to one passed to Beads)?
+own_command() {
+  case "$1" in
+    help|version|upgrade|workspace|agents|prime|init|projects|members|invite|remove|pull|push|doctor) return 0 ;;
+  esac
+  return 1
+}
+
 case "$1" in
-  ""|help|-h|--help) cmd_help; exit 0 ;;
+  ""|-h|--help) cmd_help; exit 0 ;;
+  help)
+    if [ -z "$2" ] || own_command "$2"; then cmd_help; exit 0; fi
+    blocked_command "$2"
+    bd help "$2" 2>&1 | speak_taar; exit "${PIPESTATUS[0]}" ;;
+esac
+# `taar <own command> --help` shows taar's help instead of failing on an unknown option.
+if own_command "$1"; then
+  for a in "$@"; do case "$a" in -h|--help) cmd_help; exit 0 ;; esac; done
+fi
+blocked_command "$1"
+
+case "$1" in
   version|--version|-v) cmd_version; exit 0 ;;
   upgrade)   cmd_upgrade; exit $? ;;
   workspace) shift; cmd_workspace "$@"; exit $? ;;
   agents)    shift; cmd_agents "$@"; exit $? ;;
   prime)     shift; cmd_prime "$@"; exit 0 ;;
+  doctor)    shift; cmd_doctor; exit $? ;;
 esac
 
 require_workspace
@@ -1126,17 +1285,57 @@ case "$sub" in
     fi ;;
   create|q)
     [ -n "$CURRENT_PROJECT" ] && args+=("--labels" "project:$CURRENT_PROJECT") ;;
+  stats|status)
+    [ -n "$CURRENT_PROJECT" ] && [ $all = 0 ] && \
+      echo "Note: these figures cover every project. For $CURRENT_PROJECT only: taar count --by-status" >&2 ;;
   *)
     [ $all = 1 ] && args+=("--all")             # pass through for other commands
     [ $closed = 1 ] && args+=("--closed") ;;
 esac
 
-# In a terminal, hand over to Beads directly (keeps colours). Otherwise (AI agents, pipes) drop
-# Beads' tips that tell the reader to set up `bd`, which would contradict taar's instructions.
-# Only Beads' own tip line is removed (an exact whole-line match), never todo content or JSON.
+# Run Beads, making its output speak taar:
+# - JSON output and full-screen/editor commands go straight through.
+# - Help, errors and report-style output have `bd` command references rewritten to `taar`.
+# - Commands that show todo content keep their normal output exactly as is, apart from dropping
+#   Beads' own "install the beads plugin" tip line (an exact whole-line match).
 BD_TIP="💡 Tip: Install the beads plugin for automatic workflow context, or run 'bd setup claude' for CLI-only mode"
+help_wanted=0
+for a in "${args[@]}"; do case "$a" in -h|--help) help_wanted=1 ;; esac; done
 case " ${args[*]} " in *" --json "*) exec bd "${args[@]}" ;; esac
-if [ -t 1 ]; then exec bd "${args[@]}"; fi
-bd "${args[@]}" | grep -vxF -- "$BD_TIP"
-status=("${PIPESTATUS[@]}")
-exit "${status[0]}"
+if [ $help_wanted = 0 ]; then case "$sub" in edit|create-form) exec bd "${args[@]}" ;; esac; fi
+
+drop_tip() {  # remove Beads' tip line and the blank line Beads prints before it
+  awk -v tip="$BD_TIP" '
+    held { if ($0 == tip) { held = 0; next } print ""; held = 0 }
+    $0 == "" { held = 1; next }
+    $0 == tip { next }
+    { print }
+    END { if (held) print "" }'
+}
+force_colour=""; [ -t 1 ] && force_colour=1     # keep Beads' colours although we filter its output
+rc_file=$(mktemp)
+run_bd() {  # stdout -> fd 3 untouched; stderr rewritten
+  { { CLICOLOR_FORCE=$force_colour bd "${args[@]}"; echo $? > "$rc_file"; } 2>&1 >&3 3>&- | speak_taar >&2; } 3>&1
+}
+
+if [ $help_wanted = 0 ] && data_view "$sub"; then
+  # Todo content: shown exactly as Beads prints it. Held until Beads finishes so that an error or
+  # a usage page (e.g. `taar label` on its own) can still be rewritten.
+  buf=$(mktemp)
+  run_bd > "$buf"
+  rc=$(cat "$rc_file" 2>/dev/null)
+  if [ "${rc:-1}" != 0 ] || { [ ${#args[@]} -eq 1 ] && grep -q '^Usage:' "$buf"; }; then
+    speak_taar < "$buf"
+  else
+    drop_tip < "$buf"
+  fi
+  rm -f "$buf"
+elif [ $help_wanted = 0 ] && echoes_titles "$sub"; then
+  run_bd | speak_taar strict
+  rc=$(cat "$rc_file" 2>/dev/null)
+else
+  run_bd | speak_taar
+  rc=$(cat "$rc_file" 2>/dev/null)
+fi
+rm -f "$rc_file"
+exit "${rc:-1}"

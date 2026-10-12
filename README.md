@@ -297,8 +297,11 @@ taar search login          # by keyword (includes closed todos)
 taar update taar-47t -p critical --title "Add rate limiting (urgent)"   # change a todo
 ```
 
-Anything taar doesn't handle itself goes straight to Beads, so `taar stats`, `taar dep add`,
-`taar blocked`, `taar label add` and the rest work too (`taar <command> --help`).
+Anything taar doesn't handle itself goes to Beads, so `taar stats`, `taar dep add`,
+`taar blocked`, `taar label add` and the rest work too (`taar help <command>`). Their help, hints
+and errors are shown in taar's terms. A few Beads setup commands that taar manages itself (`setup`,
+`hooks`, `bootstrap`, `dolt`, `sync`, and similar) are not available through taar and say what to use
+instead.
 
 ### 7. Working with AI agents
 
@@ -357,11 +360,23 @@ taar remove sara-dev       # removes access (asks to confirm)
 - Activity uses each person's **git name** (from who created or claimed todos) and needs `jq`,
   which is built into recent macOS.
 
-### 9. Upgrade and uninstall
+### 9. Upgrade, check and uninstall
 
 ```bash
-taar upgrade               # taar 0.3.0 -> 0.4.0
+taar upgrade               # taar 0.4.1 -> 0.5.0
 taar version
+taar doctor                # checks Beads, the workspace, GitHub access, sync and AI agent setup
+```
+```
+taar 0.5.0 (/Users/ammad/.taar)
+  ✓ taar is on your PATH
+  ✓ Beads engine 1.3.1
+  ✓ workspace /Users/ammad/Development/acme-todos
+  ✓ todo database permissions
+  ✓ GitHub reachable (https://github.com/ammad/acme-todos.git)
+  ✓ todo sync remote configured
+  ✓ project list (2 linked)
+  ✓ AI agent instructions installed
 ```
 
 To uninstall, first take the AI agent instructions out (so agents stop calling `taar`), then remove
@@ -410,8 +425,9 @@ Your workspace repos are untouched. Projects linked with `taar init` keep their 
 | `taar close <id>` | Finish a todo; `--reason` |
 | `taar agents [--remove]` | Add / remove global AI agent instructions |
 | `taar prime [--hook-json]` | Workflow briefing for AI agents |
-| `taar upgrade` / `taar version` / `taar help` | Maintenance |
-| anything else | Passed to Beads, e.g. `taar stats`, `taar dep add`, `taar blocked` |
+| `taar doctor` | Check the setup and say how to fix problems |
+| `taar upgrade` / `taar version` / `taar help [command]` | Maintenance and help |
+| anything else | Passed to Beads, e.g. `taar stats`, `taar dep add`, `taar blocked`; help, hints and errors use taar's terms |
 
 ## How it works
 
@@ -462,6 +478,8 @@ workspaces and manage members), `jq` (member activity).
 
 ## Troubleshooting and FAQ
 
+**Something seems wrong**: run `taar doctor`; it checks everything and says how to fix each problem.
+
 **`taar: command not found`**: open a new terminal (the installer added `~/.local/bin` to your
 `PATH` in `~/.zshrc`), or run `source ~/.zshrc`.
 
@@ -490,7 +508,12 @@ to it can see them. The taar tool repo contains no todos. Note that Beads itself
 usage metrics (which commands run, never your content); turn that off with `bd metrics off`.
 
 **Can I still use `bd` directly?** You can, inside the workspace folder, but there should be no
-need: everything goes through `taar`, and anything taar doesn't handle is passed to Beads.
+need: everything goes through `taar`, and anything taar doesn't handle is passed to Beads. The
+setup commands taar blocks (`setup`, `hooks`, `bootstrap`, `dolt`, `sync`, ...) are blocked because
+they would fight with the workspace taar set up.
+
+**`taar stats` shows every project.** Beads' statistics cover the whole workspace; inside a project
+taar says so. For one project use `taar count --by-status`.
 
 **Linux or Windows?** macOS only for now.
 
