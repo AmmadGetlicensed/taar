@@ -1,0 +1,17 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Beads and shellcheck
+        run: brew install beads shellcheck
+      - name: Lint
+        run: shellcheck -S warning bin/taar install.sh tests/run.sh
+      - name: Test
+        run: tests/run.sh
