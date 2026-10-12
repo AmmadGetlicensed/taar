@@ -37,9 +37,11 @@ main() {
   # taar itself.
   if [ -d "$home/.git" ]; then
     say "  updating $home"
-    git -C "$home" fetch -q --tags origin || fail "could not fetch updates"
-    git -C "$home" checkout -q "$ref" || fail "could not check out $ref"
-    git -C "$home" pull -q --ff-only origin "$ref" 2>/dev/null || true
+    git -C "$home" fetch -q --tags origin || fail "could not fetch updates (check your connection)"
+    git -C "$home" checkout -q "$ref" || fail "could not check out $ref (were files in $home changed by hand?)"
+    if git -C "$home" symbolic-ref -q HEAD >/dev/null; then    # a branch, not a pinned tag
+      git -C "$home" merge -q --ff-only "origin/$ref" || fail "could not update $home to origin/$ref"
+    fi
   else
     [ -e "$home" ] && fail "$home exists but is not a taar install; move it away and retry"
     say "  downloading taar into $home"
@@ -50,6 +52,7 @@ main() {
   # Command. Earlier versions installed `todo`; remove that link if it points at taar or
   # its predecessor wrapper, and leave any other `todo` program alone.
   mkdir -p "$bin"
+  [ "$(cd "$bin" && pwd -P)" = "$(cd "$home/bin" && pwd -P)" ] && fail "TAAR_BIN must not be taar's own bin directory ($home/bin)"
   ln -sf "$home/bin/taar" "$bin/taar"
   if [ -L "$bin/todo" ]; then
     case "$(readlink "$bin/todo")" in

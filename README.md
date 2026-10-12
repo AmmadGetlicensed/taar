@@ -293,7 +293,7 @@ taar list                  # this project's open todos
 taar list --all            # every project
 taar list --closed         # include finished todos
 taar list -p high          # only high priority
-taar search login          # by keyword
+taar search login          # by keyword (includes closed todos)
 taar update taar-47t -p critical --title "Add rate limiting (urgent)"   # change a todo
 ```
 
@@ -364,7 +364,16 @@ taar upgrade               # taar 0.3.0 -> 0.4.0
 taar version
 ```
 
-Uninstall: `rm -rf ~/.taar ~/.local/bin/taar ~/.config/taar`. Your workspace repos are untouched.
+To uninstall, first take the AI agent instructions out (so agents stop calling `taar`), then remove
+the files and the `# taar: PATH` line the installer added to `~/.zshrc` (or `~/.bash_profile`):
+
+```bash
+taar agents --remove
+rm -rf ~/.taar ~/.local/bin/taar ~/.config/taar
+```
+
+Your workspace repos are untouched. Projects linked with `taar init` keep their taar section in
+`CLAUDE.md` / `AGENTS.md` until you delete it.
 
 ## Cheat sheet
 
@@ -394,7 +403,7 @@ Uninstall: `rm -rf ~/.taar ~/.local/bin/taar ~/.config/taar`. Your workspace rep
 | `taar invite <github-user>` | Invite someone to the workspace |
 | `taar remove <github-user>` | Remove access or cancel an invitation (`-y` skips confirmation) |
 | `taar pull` / `taar push` | Get / share changes |
-| `taar list` / `ready` / `search` / `count` | Scoped to the current project; `--all` for every project, `--closed` to include closed |
+| `taar list` / `ready` / `search` / `count` | Scoped to the current project; `--all` for every project. `list` and `ready` show open todos (`list --closed` adds closed ones); `search` and `count` include closed todos |
 | `taar create "Title"` | New todo (auto-tagged with the project); `-p`, `-d` |
 | `taar show <id>` | Full details, notes and history |
 | `taar update <id>` | `--claim`, `--append-notes`, `-p`, `--title`, `--add-label`, ... |

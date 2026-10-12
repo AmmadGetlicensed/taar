@@ -15,3 +15,8 @@ jobs:
         run: shellcheck -S warning bin/taar install.sh tests/run.sh
       - name: Test
         run: tests/run.sh
+      - name: Test with macOS's own bash 3.2
+        run: |
+          mkdir -p "$RUNNER_TEMP/bash32" && ln -s /bin/bash "$RUNNER_TEMP/bash32/bash"
+          PATH="$RUNNER_TEMP/bash32:$PATH" bash --version | head -1
+          PATH="$RUNNER_TEMP/bash32:$PATH" tests/run.sh

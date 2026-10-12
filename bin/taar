@@ -29,9 +29,33 @@ BLOCK_END="<!-- END TAAR INTEGRATION -->"
 GLOBAL_BEGIN="<!-- BEGIN TAAR GLOBAL -->"
 GLOBAL_END="<!-- END TAAR GLOBAL -->"
 
-die() { echo "taar: $*" >&2; exit 1; }
+# If set, die() removes this directory (a half-created workspace or clone) before exiting.
+CLEANUP_DIR=""
+CLEANUP_NOTE=""
+die() {
+  echo "taar: $*" >&2
+  if [ -n "$CLEANUP_DIR" ] && [ -d "$CLEANUP_DIR" ]; then
+    cd / && rm -rf "$CLEANUP_DIR" && echo "  removed the unfinished $CLEANUP_DIR" >&2
+  fi
+  [ -n "$CLEANUP_NOTE" ] && echo "  $CLEANUP_NOTE" >&2
+  exit 1
+}
 warn() { echo "taar: warning: $*" >&2; }
-lower() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
+# Drop control characters (keeps nothing that could break JSON, TSV or terminal output).
+clean_text() { printf '%s' "$1" | tr '\t\n' '  ' | tr -d '\000-\037\177'; }
+# Fail clearly when a flag is given without its value: need_val "$@" before `shift 2`.
+need_val() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
+# Absolute path for a user-supplied directory (relative to where taar was run; ~ expanded).
+abs_dir() {
+  # shellcheck disable=SC2088  # matching a literal "~" typed by the user
+  case "$1" in
+    "~") echo "$HOME" ;;
+    "~/"*) echo "$HOME/${1#\~/}" ;;
+    /*) echo "$1" ;;
+    *) echo "$CALLER_DIR/$1" ;;
+  esac
+}
 slug() { lower "$1" | tr -cs 'a-z0-9._-' '-' | sed 's/^-*//; s/-*$//'; }
 
 config_get() { [ -f "$CONFIG_FILE" ] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -1; }
@@ -42,17 +66,21 @@ config_set() {
   mv "$tmp" "$CONFIG_FILE"
 }
 
-# TAAR_WORKSPACE (or legacy TODO_DIR) overrides the configured workspace.
-TODO_DIR="${TAAR_WORKSPACE:-${TODO_DIR:-$(config_get workspace)}}"
+# TAAR_WORKSPACE overrides the configured workspace. (TODO_DIR is the internal name; it is not
+# read from the environment, where todo.txt-cli uses it for something else.)
+TODO_DIR="${TAAR_WORKSPACE:-$(config_get workspace)}"
 REGISTRY="$TODO_DIR/projects.tsv"
 
 require_workspace() {
   [ -n "$TODO_DIR" ] || die "no workspace yet.
   Create one for your team:   taar workspace create
   Or join your team's:        taar workspace join <github-url>"
-  [ -d "$TODO_DIR/.beads" ] || die "workspace '$TODO_DIR' is missing or not set up.
+  if [ ! -d "$TODO_DIR/.beads" ]; then
+    [ -n "$TAAR_WORKSPACE" ] && die "TAAR_WORKSPACE='$TAAR_WORKSPACE' is not a taar workspace (unset it to use your configured one)"
+    die "workspace '$TODO_DIR' is missing or not set up.
   Point to another one:       taar workspace use <path>
   Or join your team's:        taar workspace join <github-url>"
+  fi
 }
 
 # --- Beads engine -----------------------------------------------------------
@@ -94,22 +122,36 @@ CALLER_DIR="$PWD"
 # Normalised key for the git repo containing $1:
 #   git@github.com:Owner/Repo.git -> github.com/owner/repo
 # Repos without a remote fall back to path:<toplevel> (local to this machine).
+# host/owner/repo from any git remote URL, keeping the original case.
+url_path() {
+  local url="${1%/}" host before
+  url="${url%.git}"
+  url="${url#git+}"
+  case "$url" in
+    *://*)                                  # scheme://[user@]host[:port]/path
+      url="${url#*://}"; url="${url#*@}"
+      host="${url%%/*}"; host="${host%%:*}"
+      case "$url" in */*) url="$host/${url#*/}" ;; *) url="$host" ;; esac ;;
+    *:*)                                    # [user@]host:owner/repo (scp-like; host has no "/")
+      before="${url%%:*}"
+      case "$before" in */*) ;; *) url="${url#*@}"; url="${url/://}" ;; esac ;;
+  esac
+  printf '%s\n' "$url"
+}
+
+normalize_url() { lower "$(url_path "$1")"; }
+
 project_key() {
   local top url
   top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
   url=$(git -C "$top" remote get-url origin 2>/dev/null)
   if [ -z "$url" ]; then echo "path:$top"; return 0; fi
-  url="${url%.git}"
-  url="${url#git+}"
-  url="${url#*://}"     # strip scheme
-  url="${url#*@}"       # strip user@
-  url="${url/://}"      # host:owner/repo -> host/owner/repo
-  lower "$url"
+  normalize_url "$url"
 }
 
 registry_lookup() {  # key -> "name<TAB>description"
   [ -f "$REGISTRY" ] || return 1
-  awk -F'\t' -v k="$1" '$1==k {print $2 "\t" $3; found=1; exit} END {exit !found}' "$REGISTRY"
+  awk -F'\t' -v k="$1" '{sub(/\r$/, "")} $1==k {hit = $2 "\t" $3; found=1} END {if (found) print hit; exit !found}' "$REGISTRY"
 }
 
 CURRENT_KEY=$(project_key "$CALLER_DIR" 2>/dev/null)
@@ -141,43 +183,83 @@ ask_yn() {  # ask_yn "Question" Y|N -> exit status
 
 # --- managed blocks in agent files -----------------------------------------
 
+# Write $2 over $1 in place, so symlinks (e.g. a dotfiles-managed CLAUDE.md) and permissions survive.
+write_over() { cat "$2" > "$1" && rm -f "$2"; }
+
+# State of the marked blocks in a file (markers matched by prefix, ignoring a trailing CR):
+# "none", "ok", or "broken" (a begin marker without its end marker, or nested begins).
+block_state() {  # file begin-prefix end-prefix
+  [ -f "$1" ] || { echo none; return 0; }
+  awk -v b="$2" -v e="$3" '
+    { l = $0; sub(/\r$/, "", l) }
+    index(l, b) == 1 { if (open) bad = 1; open = 1; found = 1; next }
+    index(l, e) == 1 { open = 0 }
+    END { print (bad || open) ? "broken" : (found ? "ok" : "none") }' "$1"
+}
+
+# Refuse to rewrite a file whose markers are broken: rewriting would delete everything after
+# an unterminated begin marker.
+check_blocks() {  # file begin-prefix end-prefix
+  [ "$(block_state "$@")" != broken ] && return 0
+  warn "$1 has a '$2' marker without a matching '$3' line; fix it by hand, then re-run. Left unchanged."
+  return 1
+}
+
+# Remove blocks whose first line starts with $2 and last line starts with $3, plus the one blank
+# line directly before each block (added when the block was appended). Nothing else changes.
+cut_blocks() {  # file begin-prefix end-prefix
+  local tmp; tmp=$(mktemp)
+  awk -v b="$2" -v e="$3" '
+    { l = $0; sub(/\r$/, "", l) }
+    skip { if (index(l, e) == 1) skip = 0; next }
+    index(l, b) == 1 { held = 0; skip = 1; next }
+    l == "" { if (held) print held_line; held = 1; held_line = $0; next }
+    { if (held) { print held_line; held = 0 } print }
+    END { if (held) print held_line }' "$1" > "$tmp" && write_over "$1" "$tmp"
+}
+
 upsert_block() {  # file begin end blockfile: replace the marked block, or append it
   local file="$1" begin="$2" end="$3" blk="$4" tmp
-  mkdir -p "$(dirname "$file")"
-  if [ -f "$file" ] && grep -qF "$begin" "$file"; then
+  mkdir -p "$(dirname "$file")" || return 1
+  check_blocks "$file" "$begin" "$end" || return 1
+  if [ "$(block_state "$file" "$begin" "$end")" = ok ]; then
     tmp=$(mktemp)
     awk -v b="$begin" -v e="$end" -v blk="$blk" '
-      $0==b {while ((getline line < blk) > 0) print line; skip=1; next}
-      $0==e {skip=0; next}
-      !skip {print}' "$file" > "$tmp" && mv "$tmp" "$file"
+      { l = $0; sub(/\r$/, "", l) }
+      index(l, b) == 1 { while ((getline line < blk) > 0) print line; close(blk); skip = 1; next }
+      index(l, e) == 1 { skip = 0; next }
+      !skip { print }' "$file" > "$tmp" && write_over "$file" "$tmp"
     echo "  updated taar instructions in $file"
   else
-    { [ -s "$file" ] && echo; cat "$blk"; } >> "$file"
+    if [ -s "$file" ]; then
+      [ -n "$(tail -c 1 "$file")" ] && echo >> "$file"   # file did not end with a newline
+      echo >> "$file"
+    fi
+    cat "$blk" >> "$file"
     echo "  added taar instructions to $file"
   fi
 }
 
 remove_block() {  # file begin end
-  [ -f "$1" ] && grep -qF "$2" "$1" || return 0
-  local tmp; tmp=$(mktemp)
-  awk -v b="$2" -v e="$3" '$0==b {skip=1; next} $0==e {skip=0; next} !skip {print}' "$1" | cat -s > "$tmp"
-  mv "$tmp" "$1"
+  [ "$(block_state "$1" "$2" "$3")" = none ] && return 0
+  check_blocks "$1" "$2" "$3" || return 1
+  cut_blocks "$1" "$2" "$3"
   echo "  removed taar instructions from $1"
 }
 
-has_beads_block() { [ -f "$1" ] && grep -q '^<!-- BEGIN BEADS' "$1"; }
+has_beads_block() { [ "$(block_state "$1" "<!-- BEGIN BEADS" "<!-- END BEADS")" != none ]; }
 
 strip_beads_blocks() {  # file: remove every <!-- BEGIN BEADS ... --> ... <!-- END BEADS ... --> block
-  local tmp; tmp=$(mktemp)
-  awk '/^<!-- BEGIN BEADS/ {skip=1; next} /^<!-- END BEADS/ {skip=0; next} !skip {print}' "$1" \
-    | cat -s > "$tmp" && mv "$tmp" "$1"
+  check_blocks "$1" "<!-- BEGIN BEADS" "<!-- END BEADS" || return 1
+  cut_blocks "$1" "<!-- BEGIN BEADS" "<!-- END BEADS"
   echo "  removed Beads (bd) instructions from $1"
 }
 
 has_bd_hook() { [ -f "$1" ] && grep -qE '"(bd|todo) prime' "$1"; }
 
-replace_bd_hook() {  # Claude settings.json: bd prime -> taar prime
-  sed -i.bak -E 's/"(bd|todo) prime[^"]*"/"taar prime --hook-json"/g' "$1" && rm -f "$1.bak"
+replace_bd_hook() {  # Claude settings.json: bd/todo prime -> taar prime
+  local tmp; tmp=$(mktemp)
+  sed -E 's/"(bd|todo) prime[^"]*"/"taar prime --hook-json"/g' "$1" > "$tmp" && write_over "$1" "$tmp"
   echo "  switched session hook in $1 to 'taar prime'"
 }
 
@@ -186,7 +268,7 @@ agent_rules() {
   cat <<'EOF'
 - Start of session: `taar pull`, then `taar ready` for actionable todos.
 - `taar list` shows open todos (scoped to the current linked project); `--all` for every project,
-  `--closed` to include closed. `taar search <text>` to find one.
+  `--closed` to include closed ones. `taar search <text>` finds todos, including closed ones.
 - Before working on a todo: `taar show <id>` to load its purpose, constraints, and progress notes.
 - Before creating one, check `taar list` / `taar search` for an existing match.
 - Create: `taar create "Title" -p critical|high|medium|low|backlog -d "Why: ... Goal: ... Constraints: ..."`
@@ -238,7 +320,8 @@ EOF
 
 write_workspace_files() {  # dir name join-url
   local d="$1" n="$2" u="${3:-<workspace GitHub URL>}"
-  printf '# repo-key\tproject-name\tdescription  (managed by `taar init`)\n' > "$d/projects.tsv"
+  printf '# repo-key\tproject-name\tdescription  (managed by `taar init`)\n' > "$d/projects.tsv" || return 1
+  printf 'projects.tsv merge=union\n' > "$d/.gitattributes"
   cat > "$d/README.md" <<EOF
 # $n
 
@@ -285,6 +368,58 @@ EOF
 EOF
 }
 
+# Let git merge concurrent project links (both sides append lines to projects.tsv). Workspaces
+# created before this existed get the rule the first time taar syncs them.
+ensure_merge_rule() {
+  grep -qs '^projects.tsv merge=union' "$TODO_DIR/.gitattributes" && return 0
+  printf 'projects.tsv merge=union\n' >> "$TODO_DIR/.gitattributes"
+  git -C "$TODO_DIR" add .gitattributes >/dev/null 2>&1 \
+    && git -C "$TODO_DIR" commit -q -m "taar: merge projects.tsv by union" -- .gitattributes >/dev/null 2>&1
+  return 0
+}
+
+# Collapse duplicate project rows (concurrent edits of the same project merge as two lines;
+# the last one wins, as in registry_lookup) and drop stray conflict-marker lines.
+tidy_registry() {
+  [ -f "$REGISTRY" ] || return 0
+  local tmp; tmp=$(mktemp)
+  awk -F'\t' '
+    {sub(/\r$/, "")}
+    /^(<<<<<<<|=======|>>>>>>>)/ {next}
+    /^#/ || NF < 2 {keep[++n] = $0; next}
+    !($1 in row) {keep[++n] = $1; iskey[n] = 1}
+    {row[$1] = $0}
+    END { for (i = 1; i <= n; i++) print (iskey[i] ? row[keep[i]] : keep[i]) }' "$REGISTRY" > "$tmp"
+  if cmp -s "$tmp" "$REGISTRY"; then rm -f "$tmp"; return 0; fi
+  mv "$tmp" "$REGISTRY"
+  git -C "$TODO_DIR" commit -q -m "taar: tidy projects.tsv" -- projects.tsv >/dev/null 2>&1
+  return 0
+}
+
+# Pull the workspace's git files (projects.tsv, docs) without ever leaving a half-finished
+# rebase behind or waiting on a hidden password prompt. Returns 1 if it could not update.
+sync_workspace_git() {
+  local gd; gd=$(git -C "$TODO_DIR" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  if [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ]; then git -C "$TODO_DIR" rebase --abort >/dev/null 2>&1; fi
+  [ -f "$gd/MERGE_HEAD" ] && git -C "$TODO_DIR" merge --abort >/dev/null 2>&1
+  ensure_merge_rule
+  git -C "$TODO_DIR" remote get-url origin >/dev/null 2>&1 || return 0
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$TODO_DIR" pull -q --rebase --autostash >/dev/null 2>&1; then
+    git -C "$TODO_DIR" rebase --abort >/dev/null 2>&1
+    return 1
+  fi
+  tidy_registry
+}
+
+push_workspace_git() {  # push committed workspace files (e.g. project links) if any are unpushed
+  git -C "$TODO_DIR" remote get-url origin >/dev/null 2>&1 || return 0
+  if ! git -C "$TODO_DIR" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
+    GIT_TERMINAL_PROMPT=0 git -C "$TODO_DIR" push -q -u origin HEAD 2>/dev/null; return
+  fi
+  [ -n "$(git -C "$TODO_DIR" rev-list '@{u}..HEAD' 2>/dev/null)" ] || return 0
+  GIT_TERMINAL_PROMPT=0 git -C "$TODO_DIR" push -q 2>/dev/null
+}
+
 default_base_dir() { if [ -d "$HOME/Development" ]; then echo "$HOME/Development"; else echo "$HOME"; fi; }
 
 gh_ready() { command -v gh >/dev/null && gh auth status >/dev/null 2>&1; }
@@ -295,11 +430,16 @@ ws_create() {
   local name="" dir="" prefix="" owner="" url="" github="" yes=0 agents=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --name) name="$2"; shift 2 ;;
-      --dir) dir="$2"; shift 2 ;;
-      --prefix) prefix="$2"; shift 2 ;;
-      --owner) owner="$2"; shift 2 ;;
-      --url) url="$2"; shift 2 ;;
+      --name) need_val "$@"; name="$2"; shift 2 ;;
+      --name=*) name="${1#*=}"; shift ;;
+      --dir) need_val "$@"; dir="$2"; shift 2 ;;
+      --dir=*) dir="${1#*=}"; shift ;;
+      --prefix) need_val "$@"; prefix="$2"; shift 2 ;;
+      --prefix=*) prefix="${1#*=}"; shift ;;
+      --owner) need_val "$@"; owner="$2"; shift 2 ;;
+      --owner=*) owner="${1#*=}"; shift ;;
+      --url) need_val "$@"; url="$2"; shift 2 ;;
+      --url=*) url="${1#*=}"; shift ;;
       --no-github) github=N; shift ;;
       --agents) agents=Y; shift ;;
       --no-agents) agents=N; shift ;;
@@ -323,7 +463,7 @@ ws_create() {
     dir="$(default_base_dir)/$name"
     [ $yes = 1 ] || dir=$(ask "Where to keep it on this Mac" "$dir") || exit 1
   fi
-  case "$dir" in "~"/*) dir="$HOME/${dir#\~/}" ;; esac
+  dir=$(abs_dir "$dir")
   if [ -e "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then die "$dir already exists and is not empty"; fi
 
   if [ -z "$prefix" ]; then
@@ -344,19 +484,22 @@ ws_create() {
   echo
 
   mkdir -p "$dir" && cd "$dir" || die "cannot create $dir"
+  CLEANUP_DIR="$dir"
   git init -q -b main || die "git init failed"
   local join_url=""
   if [ "$github" = Y ]; then join_url="https://github.com/$owner/$name"; else join_url="$url"; fi
-  write_workspace_files "$dir" "$name" "$join_url"
+  write_workspace_files "$dir" "$name" "$join_url" || die "could not write workspace files in $dir"
   git add -A && git commit -q -m "taar: create workspace $name" || die "git commit failed (is git user.name/email set?)"
 
   if [ "$github" = Y ]; then
     gh repo create "$owner/$name" --private --source . --remote origin --push >/dev/null \
       || die "could not create GitHub repo $owner/$name (it may already exist; use --url or another --name)"
     echo "  created private GitHub repo $owner/$name"
+    CLEANUP_NOTE="The GitHub repo $owner/$name was already created; delete it on GitHub or reuse it with --url."
   elif [ -n "$url" ]; then
     git remote add origin "$url" && git push -q -u origin main || die "could not push to $url (is it empty and accessible?)"
     echo "  pushed to $url"
+    CLEANUP_NOTE="The first commit was already pushed to $url; empty that repo (or use a new one) before retrying."
   fi
 
   local log; log=$(mktemp)
@@ -367,10 +510,11 @@ ws_create() {
   chmod 700 .beads
   git add -A && git commit -q -m "taar: initialise todo database" >/dev/null 2>&1
   if git remote get-url origin >/dev/null 2>&1; then
-    git push -q 2>/dev/null || warn "git push failed"
+    GIT_TERMINAL_PROMPT=0 git push -q 2>/dev/null || warn "git push failed"
     bd dolt push >/dev/null 2>&1 && echo "  pushed todo database" || warn "todo database push failed; run 'taar push' later"
   fi
 
+  CLEANUP_DIR=""; CLEANUP_NOTE=""
   config_set workspace "$dir"; TODO_DIR="$dir"
   echo "  workspace ready at $dir (now active)"
   offer_global_agents "$agents" "$yes"
@@ -390,7 +534,8 @@ ws_join() {
   local url="" dir="" yes=0 agents=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --dir) dir="$2"; shift 2 ;;
+      --dir) need_val "$@"; dir="$2"; shift 2 ;;
+      --dir=*) dir="${1#*=}"; shift ;;
       --agents) agents=Y; shift ;;
       --no-agents) agents=N; shift ;;
       -y|--yes) yes=1; shift ;;
@@ -407,13 +552,17 @@ ws_join() {
     dir="$(default_base_dir)/$name"
     [ $yes = 1 ] || dir=$(ask "Where to keep it on this Mac" "$dir") || exit 1
   fi
-  case "$dir" in "~"/*) dir="$HOME/${dir#\~/}" ;; esac
+  dir=$(abs_dir "$dir")
 
   if [ -d "$dir/.git" ]; then
+    local have; have=$(git -C "$dir" remote get-url origin 2>/dev/null)
+    [ "$(normalize_url "$have")" = "$(normalize_url "$url")" ] \
+      || die "$dir is a clone of ${have:-an unknown repo}, not $url (choose another --dir)"
     echo "  using existing clone at $dir"
   else
     [ -e "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ] && die "$dir already exists and is not a clone"
     git clone -q "$url" "$dir" || die "could not clone $url (do you have access?)"
+    CLEANUP_DIR="$dir"
     echo "  cloned $url"
   fi
   cd "$dir" || die "cannot cd to $dir"
@@ -427,6 +576,7 @@ ws_join() {
   bd dolt pull >/dev/null 2>&1 || warn "could not pull latest todos; try 'taar pull'"
   echo "  todo database ready"
 
+  CLEANUP_DIR=""
   config_set workspace "$dir"; TODO_DIR="$dir"
   echo "  workspace ready at $dir (now active)"
   offer_global_agents "$agents" "$yes"
@@ -449,7 +599,7 @@ ws_show() {
   fi
   echo "Workspace: $TODO_DIR"
   echo "Remote:    $(git -C "$TODO_DIR" remote get-url origin 2>/dev/null || echo 'none (this Mac only)')"
-  local n; n=$(grep -vc '^#' "$REGISTRY" 2>/dev/null)
+  local n; n=$(awk -F'\t' '!/^#/ && NF >= 2 && !seen[$1]++' "$REGISTRY" 2>/dev/null | grep -c .)
   echo "Projects:  ${n:-0}"
   [ -n "$CURRENT_PROJECT" ] && echo "Current:   $CURRENT_PROJECT"
   return 0
@@ -483,13 +633,18 @@ offer_global_agents() {  # choice(Y/N/"") yes(0/1)
 
 cmd_agents() {
   local blk f; blk=$(mktemp)
-  if [ "$1" = --remove ]; then
-    for f in $(global_agent_files); do remove_block "$f" "$GLOBAL_BEGIN" "$GLOBAL_END"; done
-  else
-    global_block > "$blk"
-    for f in $(global_agent_files); do upsert_block "$f" "$GLOBAL_BEGIN" "$GLOBAL_END" "$blk"; done
-  fi
+  case "$1" in ""|--remove) ;; *) die "agents: unknown option $1 (use --remove to take the instructions out)" ;; esac
+  global_block > "$blk"
+  local failed=0
+  while IFS= read -r f; do
+    if [ "$1" = --remove ]; then
+      remove_block "$f" "$GLOBAL_BEGIN" "$GLOBAL_END" || failed=1
+    else
+      upsert_block "$f" "$GLOBAL_BEGIN" "$GLOBAL_END" "$blk" || failed=1
+    fi
+  done < <(global_agent_files)
   rm -f "$blk"
+  [ $failed = 0 ] || { echo "taar: some files were left unchanged (see above)" >&2; return 1; }
 }
 
 # --- commands: members (GitHub repo access) ---------------------------------
@@ -498,11 +653,15 @@ cmd_agents() {
 workspace_repo() {
   local url; url=$(git -C "$TODO_DIR" remote get-url origin 2>/dev/null) \
     || die "this workspace has no GitHub remote, so it has no members to manage"
-  url="${url%.git}"; url="${url#git+}"; url="${url#*://}"; url="${url#*@}"; url="${url/://}"
-  case "$url" in
-    github.com/*/*) echo "${url#github.com/}" ;;
+  url=$(url_path "$url")
+  case "$(lower "$url")" in
+    github.com/*/*) echo "${url#*/}" ;;
     *) die "members are managed on GitHub; this workspace's remote is not on github.com" ;;
   esac
+}
+
+valid_user() {  # GitHub usernames: letters, digits, hyphens (and _ for Enterprise Managed Users)
+  printf '%s' "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9_-]{0,47}[A-Za-z0-9])?$' || die "'$1' is not a valid GitHub username"
 }
 
 require_gh() {
@@ -515,7 +674,7 @@ cmd_members() {
   local people invites
   people=$(gh api "repos/$repo/collaborators" --paginate --jq '.[] | "\(.login)\t\(.role_name)"' 2>/dev/null) \
     || die "could not read members of $repo (only workspace admins can see them)"
-  invites=$(gh api "repos/$repo/invitations" --paginate --jq '.[] | "\(.invitee.login)\t\(.created_at[0:10])"' 2>/dev/null)
+  invites=$(gh api "repos/$repo/invitations" --paginate --jq '.[] | "\(.invitee.login // "(by email)")\t\(.created_at[0:10])"' 2>/dev/null)
 
   echo "Members of $repo (people who can join and sync):"
   printf '%s\n' "$people" | awk -F'\t' 'NF {printf "  %-24s %s\n", $1, $2}'
@@ -554,6 +713,7 @@ cmd_invite() {
     esac
   done
   [ -n "$user" ] || die "usage: taar invite <github-username>"
+  valid_user "$user"
   require_gh
   local repo; repo=$(workspace_repo) || exit 1
   gh api "users/$user" --jq .login >/dev/null 2>&1 || die "no GitHub user named '$user'"
@@ -584,20 +744,33 @@ cmd_remove() {
     esac
   done
   [ -n "$user" ] || die "usage: taar remove <github-username>"
+  valid_user "$user"
   require_gh
   local repo; repo=$(workspace_repo) || exit 1
-  [ "$(lower "$user")" = "$(lower "${repo%%/*}")" ] && die "$user owns $repo and cannot be removed"
+  local u; u=$(lower "$user")
+  [ "$u" = "$(lower "${repo%%/*}")" ] && die "$user owns $repo and cannot be removed"
 
   # A pending invitation is cancelled; an existing member loses access.
-  local invite_id
-  invite_id=$(gh api "repos/$repo/invitations" --paginate \
-    --jq ".[] | select((.invitee.login | ascii_downcase) == \"$(lower "$user")\") | .id" 2>/dev/null | head -1)
+  local invites invite_id
+  invites=$(gh api "repos/$repo/invitations" --paginate --jq '.[] | "\(.id)\t\(.invitee.login // "")"' 2>/dev/null) \
+    || die "could not read invitations for $repo (only workspace admins can manage members)"
+  invite_id=$(printf '%s\n' "$invites" | awk -F'\t' -v u="$u" 'tolower($2) == u {print $1; exit}')
   if [ -n "$invite_id" ]; then
     gh api -X DELETE "repos/$repo/invitations/$invite_id" >/dev/null || die "could not cancel the invitation"
     echo "Cancelled the pending invitation for $user."
     return 0
   fi
-  gh api "repos/$repo/collaborators/$user" >/dev/null 2>&1 || die "$user is not a member of $repo"
+  # Only people added directly to the repo can be removed here; organisation members get
+  # access through the organisation.
+  local direct
+  direct=$(gh api "repos/$repo/collaborators?affiliation=direct" --paginate --jq '.[].login' 2>/dev/null) \
+    || die "could not read members of $repo (only workspace admins can manage members)"
+  if ! printf '%s\n' "$direct" | awk -v u="$u" 'tolower($0) == u {found=1} END {exit !found}'; then
+    if gh api "repos/$repo/collaborators/$user" >/dev/null 2>&1; then
+      die "$user has access through the GitHub organisation; remove them in the organisation's settings"
+    fi
+    die "$user is not a member of $repo"
+  fi
   if [ $yes = 0 ]; then
     has_tty || die "remove: no terminal to confirm; pass -y"
     ask_yn "Remove $user from $repo? They will no longer be able to sync." N || { echo "Cancelled."; return 0; }
@@ -608,15 +781,25 @@ cmd_remove() {
 
 # --- commands: project linking ----------------------------------------------
 
+# IDs of todos (open and closed) carrying a label. Uses jq when available.
+ids_with_label() {
+  local json; json=$(bd list --all --limit 0 --label "$1" --json 2>/dev/null) || return 1
+  if command -v jq >/dev/null; then
+    printf '%s' "$json" | jq -r '.[].id'
+  else
+    printf '%s' "$json" | grep -oE '^ {4}"id": *"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/'
+  fi
+}
+
 cmd_init() {
   local name="" desc="" files="" yes=0 share="" keep_beads=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --name) name="$2"; shift 2 ;;
+      --name) need_val "$@"; name="$2"; shift 2 ;;
       --name=*) name="${1#*=}"; shift ;;
-      -d|--description) desc="$2"; shift 2 ;;
+      -d|--description) need_val "$@"; desc="$2"; shift 2 ;;
       --description=*) desc="${1#*=}"; shift ;;
-      --agent-files) files="$2"; shift 2 ;;     # e.g. CLAUDE.md,AGENTS.md or none
+      --agent-files) need_val "$@"; files="$2"; shift 2 ;;     # e.g. CLAUDE.md,AGENTS.md or none
       --agent-files=*) files="${1#*=}"; shift ;;
       --share) share=Y; shift ;;
       --no-share) share=N; shift ;;
@@ -638,12 +821,16 @@ cmd_init() {
   echo "Linking project at $top"
   echo "  repo key: $key"
   case "$key" in path:*) echo "  note: no git remote 'origin', so colleagues won't be matched to this project." ;; esac
-  [ -n "$CURRENT_PROJECT" ] && echo "  already linked as '$CURRENT_PROJECT'. Re-running will update it."
+
+  # Work from the latest project list, so name checks see colleagues' links.
+  sync_workspace_git || warn "could not get the latest project list from GitHub; using the local copy"
+  local old="" entry
+  if entry=$(registry_lookup "$key"); then old="${entry%%$'\t'*}"; CURRENT_DESC="${entry#*$'\t'}"; fi
+  [ -n "$old" ] && echo "  already linked as '$old'. Re-running will update it."
   echo
 
-  local def_name
-  def_name=${CURRENT_PROJECT:-$(slug "$(basename "$top")")}
   if [ -z "$name" ]; then
+    local def_name; def_name=${old:-$(slug "$(basename "$top")")}
     if [ $yes = 1 ]; then name="$def_name"; else name=$(ask "Project name (used as label project:<name>)" "$def_name") || exit 1; fi
   fi
   name=$(slug "$name")
@@ -651,24 +838,38 @@ cmd_init() {
 
   # Name must not already belong to a different repo.
   if [ -f "$REGISTRY" ]; then
-    local owner
-    owner=$(awk -F'\t' -v n="$name" -v k="$key" '$2==n && $1!=k {print $1; exit}' "$REGISTRY")
-    [ -z "$owner" ] || die "init: name '$name' is already used by $owner"
+    local taken
+    taken=$(awk -F'\t' -v n="$name" -v k="$key" '{sub(/\r$/, "")} $2==n && $1!=k {print $1; exit}' "$REGISTRY")
+    [ -z "$taken" ] || die "init: name '$name' is already used by $taken"
   fi
 
   if [ -z "$desc" ] && [ $yes = 0 ]; then
     desc=$(ask "One-line description (what is this project?)" "$CURRENT_DESC") || exit 1
   fi
-  desc=$(printf "%s" "${desc:-$CURRENT_DESC}" | tr '\t\n' '  ')
+  desc=$(clean_text "${desc:-$CURRENT_DESC}")
 
-  # Update registry (pull first so we don't clobber colleagues' entries).
-  git -C "$TODO_DIR" pull -q --rebase --autostash >/dev/null 2>&1
+  # Update the registry: drop this repo's old line (and any stray conflict-marker lines), append.
   [ -f "$REGISTRY" ] || printf '# repo-key\tproject-name\tdescription  (managed by `taar init`)\n' > "$REGISTRY"
   local tmp; tmp=$(mktemp)
-  awk -F'\t' -v k="$key" '$1!=k' "$REGISTRY" > "$tmp"
+  awk -F'\t' -v k="$key" '{sub(/\r$/, "")} /^(<<<<<<<|=======|>>>>>>>)/ {next} $1!=k' "$REGISTRY" > "$tmp"
   printf '%s\t%s\t%s\n' "$key" "$name" "$desc" >> "$tmp"
   mv "$tmp" "$REGISTRY"
   echo "  registered '$name' in the workspace"
+
+  # Renamed: move this project's todos to the new label so they stay visible.
+  local moved=0
+  if [ -n "$old" ] && [ "$old" != "$name" ]; then
+    local ids; ids=$(ids_with_label "project:$old")
+    if [ -n "$ids" ]; then
+      # shellcheck disable=SC2086  # one ID per word
+      if bd label add $ids "project:$name" >/dev/null && bd label remove $ids "project:$old" >/dev/null; then
+        moved=$(printf '%s\n' "$ids" | grep -c .)
+        echo "  moved $moved todo(s) from project:$old to project:$name"
+      else
+        warn "could not relabel todos from project:$old; run: taar update <id> --add-label project:$name"
+      fi
+    fi
+  fi
 
   # AI agent instructions.
   if [ -z "$files" ]; then
@@ -684,9 +885,14 @@ cmd_init() {
     fi
   fi
   if [ "$files" != none ]; then
-    local blk f; blk=$(mktemp)
+    local blk f list; blk=$(mktemp)
     project_block "$name" "$desc" > "$blk"
-    for f in $(echo "$files" | tr ',' ' '); do upsert_block "$top/$f" "$BLOCK_BEGIN" "$BLOCK_END" "$blk"; done
+    IFS=, read -r -a list <<< "$files"
+    for f in "${list[@]}"; do
+      f=$(printf '%s' "$f" | sed 's/^ *//; s/ *$//')
+      [ -n "$f" ] || continue
+      upsert_block "$top/$f" "$BLOCK_BEGIN" "$BLOCK_END" "$blk" || echo "  note: $f was left unchanged (see the warning above)"
+    done
     rm -f "$blk"
   fi
 
@@ -706,23 +912,24 @@ cmd_init() {
   fi
   [ -d "$top/.beads" ] && echo "  note: this project also has its own Beads database (.beads/); taar uses the shared workspace."
 
-  # Share registry with colleagues.
+  # Share with colleagues.
   if [ -z "$share" ]; then
     if [ $yes = 1 ]; then share=Y
-    elif ask_yn "Share this project link with colleagues now (git push the workspace)?" Y; then share=Y
+    elif ask_yn "Share this project link with colleagues now (push the workspace)?" Y; then share=Y
     else share=N; fi
   fi
   git -C "$TODO_DIR" add projects.tsv
   git -C "$TODO_DIR" diff --cached --quiet -- projects.tsv \
     || git -C "$TODO_DIR" commit -q -m "taar init: link project $name" -- projects.tsv
   if [ "$share" = Y ] && git -C "$TODO_DIR" remote get-url origin >/dev/null 2>&1; then
-    if git -C "$TODO_DIR" push -q 2>/dev/null; then
+    if push_workspace_git || { sync_workspace_git && push_workspace_git; }; then
       echo "  pushed project link to GitHub"
     else
-      warn "could not push the project link; run 'git push' in $TODO_DIR"
+      warn "could not push the project link; it will be shared on your next 'taar push'"
     fi
+    [ "$moved" -gt 0 ] && { bd dolt push >/dev/null 2>&1 || warn "could not push the relabelled todos; run 'taar push'"; }
   else
-    echo "  project link saved locally (shared on your next 'git push' in $TODO_DIR)"
+    echo "  project link saved locally (shared on your next 'taar push')"
   fi
 
   echo
@@ -735,8 +942,12 @@ cmd_init() {
 cmd_projects() {
   [ -f "$REGISTRY" ] && grep -qv '^#' "$REGISTRY" || { echo "No linked projects yet. Run 'taar init' inside a project."; return 0; }
   awk -F'\t' -v cur="$CURRENT_KEY" '
-    /^#/ {next}
-    {printf "%s %-20s %s\n      %s\n", ($1==cur ? "*" : " "), $2, $3, $1}' "$REGISTRY"
+    {sub(/\r$/, "")}
+    /^#/ || /^(<<<<<<<|=======|>>>>>>>)/ || NF < 2 {next}
+    !($1 in seen) {order[++n] = $1}
+    {seen[$1] = 1; name[$1] = $2; desc[$1] = $3}
+    END { for (i = 1; i <= n; i++) { k = order[i]
+      printf "%s %-20s %s\n      %s\n", (k==cur ? "*" : " "), name[k], desc[k], k } }' "$REGISTRY"
 }
 
 # --- commands: agent context, help, maintenance -----------------------------
@@ -770,7 +981,8 @@ EOF
 cmd_prime() {
   if [ "$1" = --hook-json ]; then
     printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"'
-    prime_text | awk '{gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); gsub(/\t/,"\\t"); printf "%s\\n", $0}'
+    prime_text | tr -d '\000-\010\013-\037\177' \
+      | awk '{gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); gsub(/\t/,"\\t"); printf "%s\\n", $0}'
     printf '"}}\n'
   else
     prime_text
@@ -799,8 +1011,8 @@ Projects
 Daily use
   taar pull / taar push      sync with colleagues
   taar ready                 actionable todos
-  taar list [--all] [--closed]
-  taar search <text>
+  taar list [--all] [--closed]  open todos; --all every project, --closed include closed
+  taar search <text>         includes closed todos
   taar show <id>
   taar create "Title" -p critical|high|medium|low|backlog -d "Why / Goal / Constraints"
   taar update <id> --claim | --append-notes "..." | -p high | --title "..."
@@ -822,10 +1034,19 @@ EOF
 cmd_upgrade() {
   [ -d "$TAAR_HOME/.git" ] || die "taar at $TAAR_HOME is not a git install; re-run the installer"
   local before; before=$TAAR_VERSION
-  git -C "$TAAR_HOME" pull -q --ff-only || die "upgrade failed (local changes in $TAAR_HOME?)"
-  # Re-run the installer from the updated clone so command links stay current.
+  # Upgrade along the current branch; an install pinned to a release tag moves to main.
   local ref; ref=$(git -C "$TAAR_HOME" rev-parse --abbrev-ref HEAD)
-  env TAAR_HOME="$TAAR_HOME" TAAR_REF="$ref" bash "$TAAR_HOME/install.sh" >/dev/null \
+  [ "$ref" = HEAD ] && ref=main
+  [ -z "$(git -C "$TAAR_HOME" status --porcelain --untracked-files=no)" ] \
+    || die "upgrade stopped: files in $TAAR_HOME were changed by hand (undo with: git -C $TAAR_HOME checkout .)"
+  git -C "$TAAR_HOME" fetch -q origin || die "could not reach the taar repository; check your connection"
+  git -C "$TAAR_HOME" checkout -q "$ref" 2>/dev/null || die "could not switch $TAAR_HOME to $ref"
+  git -C "$TAAR_HOME" merge -q --ff-only "origin/$ref" 2>/dev/null || die "could not update $TAAR_HOME to origin/$ref"
+  # Re-run the installer from the updated clone so command links stay current.
+  # Keep the command where it was installed (the symlink this was run through, if any).
+  local bin="${TAAR_BIN:-}"
+  [ -z "$bin" ] && [ -L "${BASH_SOURCE[0]}" ] && bin=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  env TAAR_HOME="$TAAR_HOME" TAAR_REF="$ref" ${bin:+TAAR_BIN="$bin"} bash "$TAAR_HOME/install.sh" >/dev/null \
     || die "post-upgrade setup failed; re-run the installer"
   echo "taar $before -> $(cat "$TAAR_HOME/VERSION")"
 }
@@ -856,9 +1077,15 @@ case "$1" in
   members)  shift; cmd_members "$@"; exit $? ;;
   invite)   shift; cmd_invite "$@"; exit $? ;;
   remove)   shift; cmd_remove "$@"; exit $? ;;
-  pull)     shift; git pull -q --rebase --autostash >/dev/null 2>&1 || warn "git pull of the workspace failed"
+  pull)     shift
+            sync_workspace_git || warn "could not update linked projects from GitHub (offline, or no access?); todos are still pulled"
             exec bd dolt pull "$@" ;;
-  push)     shift; exec bd dolt push "$@" ;;
+  push)     shift
+            # Share project links committed locally (e.g. `taar init --no-share`) too.
+            push_workspace_git || {
+              sync_workspace_git && push_workspace_git
+            } || warn "could not push project links; run 'taar pull' and try again"
+            exec bd dolt push "$@" ;;
 esac
 
 sub="$1"
@@ -881,7 +1108,14 @@ done
 
 case "$sub" in
   list|ready|search|count)
-    [ $closed = 1 ] && args+=("--all")          # Beads' --all = include closed
+    # --closed: list hides closed todos unless Beads' --all is given; search and count already
+    # include them; ready is open work only.
+    if [ $closed = 1 ]; then
+      case "$sub" in
+        list)  args+=("--all") ;;
+        ready) die "'taar ready' only shows open work; use 'taar list --closed' to see closed todos" ;;
+      esac
+    fi
     if [ $all = 0 ] && [ -n "$CURRENT_PROJECT" ]; then
       echo "Project: $CURRENT_PROJECT  (use --all for every project)" >&2
       args+=("--label" "project:$CURRENT_PROJECT")
@@ -893,4 +1127,12 @@ case "$sub" in
     [ $closed = 1 ] && args+=("--closed") ;;
 esac
 
-exec bd "${args[@]}"
+# In a terminal, hand over to Beads directly (keeps colours). Otherwise (AI agents, pipes) drop
+# Beads' tips that tell the reader to set up `bd`, which would contradict taar's instructions.
+# Only Beads' own tip line is removed (an exact whole-line match), never todo content or JSON.
+BD_TIP="💡 Tip: Install the beads plugin for automatic workflow context, or run 'bd setup claude' for CLI-only mode"
+case " ${args[*]} " in *" --json "*) exec bd "${args[@]}" ;; esac
+if [ -t 1 ]; then exec bd "${args[@]}"; fi
+bd "${args[@]}" | grep -vxF -- "$BD_TIP"
+status=("${PIPESTATUS[@]}")
+exit "${status[0]}"

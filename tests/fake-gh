@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fake GitHub CLI for tests. Keeps repo members and invitations as JSON in $FAKE_GH_DIR and
 # applies --jq expressions with jq, like the real `gh api`. User "ghost" does not exist.
+# Supports ?affiliation=direct on the collaborators list.
 D="$FAKE_GH_DIR"
 echo "$*" >> "$D/calls"
 [ "$1" = auth ] && exit 0
@@ -22,6 +23,7 @@ out() { printf '%s' "$1" | jq -r "$expr"; }
 is_member() { jq -e --arg u "$1" 'any(.[]; .login == $u)' "$D/collab.json" >/dev/null; }
 update() { jq "$@" > "$D/tmp.json" && mv "$D/tmp.json" "$file"; }
 
+query=""; case "$path" in *\?*) query="${path#*\?}"; path="${path%%\?*}" ;; esac
 user="${path##*/}"
 case "$method $path" in
   "GET user")
@@ -30,7 +32,9 @@ case "$method $path" in
     [ "$user" = ghost ] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
     out "{\"login\": \"$user\"}" ;;
   "GET repos/"*/collaborators)
-    out "$(cat "$D/collab.json")" ;;
+    # Members with "via": "org" have access through an organisation, not directly.
+    if [ "$query" = affiliation=direct ]; then out "$(jq '[.[] | select(.via != "org")]' "$D/collab.json")"
+    else out "$(cat "$D/collab.json")"; fi ;;
   "GET repos/"*/collaborators/*)
     is_member "$user" || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
   "GET repos/"*/invitations)
@@ -43,7 +47,7 @@ case "$method $path" in
   "DELETE repos/"*/invitations/*)
     file="$D/inv.json"; update --argjson i "$user" 'map(select(.id != $i))' "$file" ;;
   "DELETE repos/"*/collaborators/*)
-    file="$D/collab.json"; update --arg u "$user" 'map(select(.login != $u))' "$file" ;;
+    file="$D/collab.json"; update --arg u "$user" 'map(select((.login | ascii_downcase) != ($u | ascii_downcase)))' "$file" ;;
   *)
     echo "fake gh: unhandled $method $path" >&2; exit 1 ;;
 esac
