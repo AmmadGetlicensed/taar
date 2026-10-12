@@ -9,7 +9,7 @@
 # Must stay compatible with macOS bash 3.2 (no associative arrays, no ${var,,}).
 set -o pipefail
 
-TAAR_MIN_BD="1.3.1"
+TAAR_MIN_BD="1.2.2"
 
 # --- install location, config, workspace -----------------------------------
 

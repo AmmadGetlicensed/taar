@@ -116,7 +116,7 @@ repos are untouched.
   project names. `~/.config/taar/config` remembers the active workspace.
 - Projects are Beads labels (`project:<name>`); taar adds them on create and filters by them on list.
 
-Requirements: macOS, git, [Homebrew](https://brew.sh) (for Beads ≥ 1.3.1). `gh` is optional.
+Requirements: macOS, git, [Homebrew](https://brew.sh) (for Beads ≥ 1.2.2). `gh` is optional.
 
 ## Development
 

@@ -122,8 +122,9 @@ check  "installer syntax" bash -n "$ROOT/install.sh"
 # Install from a local clone of the working tree (including uncommitted changes).
 git clone -q "$ROOT" "$T/src"
 cp -R "$ROOT/bin" "$ROOT/install.sh" "$ROOT/VERSION" "$T/src/"
+git -C "$T/src" checkout -q -B taar-test    # CI may be on a detached tag
 git -C "$T/src" add -A && git -C "$T/src" commit -qm wip >/dev/null 2>&1
-REF=$(git -C "$T/src" branch --show-current)
+REF=taar-test
 install_taar() { env TAAR_REPO="$T/src" TAAR_HOME="$T/install" TAAR_REF="$REF" bash "$ROOT/install.sh"; }
 rm "$HOME/.local/bin/todo"; ln -s "$T/old/bin/todo" "$HOME/.local/bin/todo"   # previous todo wrapper
 check  "installer runs" install_taar
