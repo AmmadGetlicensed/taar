@@ -2,8 +2,8 @@
 # taar installer:
 #   curl -fsSL https://raw.githubusercontent.com/AmmadGetlicensed/taar/main/install.sh | bash
 #
-# Installs taar into ~/.taar (a git clone, so `todo upgrade` can update it), links the `todo` and
-# `taar` commands into ~/.local/bin, and installs the Beads engine with Homebrew if it is missing.
+# Installs taar into ~/.taar (a git clone, so `taar upgrade` can update it), links the `taar`
+# command into ~/.local/bin, and installs the Beads engine with Homebrew if it is missing.
 #
 # Environment overrides: TAAR_REPO, TAAR_REF (branch or tag), TAAR_HOME, TAAR_BIN.
 # Everything runs inside main() so a partially downloaded script does nothing.
@@ -19,7 +19,7 @@ main() {
   say() { printf '%s\n' "$*"; }
   fail() { printf 'taar install: %s\n' "$*" >&2; exit 1; }
 
-  say "Installing taar (todo)..."
+  say "Installing taar..."
 
   [ "$(uname -s)" = Darwin ] || say "  note: taar currently supports macOS only; continuing anyway."
   command -v git >/dev/null || fail "git is required. Run: xcode-select --install"
@@ -47,19 +47,16 @@ main() {
   fi
   chmod +x "$home/bin/taar"
 
-  # Commands. Replace an existing `todo` only if it is a symlink to a taar-style wrapper.
+  # Command. Earlier versions installed `todo`; remove that link if it points at taar or
+  # its predecessor wrapper, and leave any other `todo` program alone.
   mkdir -p "$bin"
   ln -sf "$home/bin/taar" "$bin/taar"
-  if [ -e "$bin/todo" ] || [ -L "$bin/todo" ]; then
-    local target; target=$(readlink "$bin/todo" 2>/dev/null || true)
-    case "$target" in
-      */bin/taar|*/bin/todo) ln -sf "$home/bin/taar" "$bin/todo" ;;
-      *) say "  note: $bin/todo already exists and is not taar; use the 'taar' command instead." ;;
+  if [ -L "$bin/todo" ]; then
+    case "$(readlink "$bin/todo")" in
+      */bin/taar|*/bin/todo) rm -f "$bin/todo"; say "  removed the old 'todo' command (now 'taar')" ;;
     esac
-  else
-    ln -s "$home/bin/taar" "$bin/todo"
   fi
-  say "  linked $bin/todo and $bin/taar"
+  say "  linked $bin/taar"
 
   # PATH.
   case ":$PATH:" in
@@ -77,9 +74,9 @@ main() {
   say "taar $(cat "$home/VERSION") installed."
   say ""
   say "Next:"
-  say "  New team?          todo workspace create"
-  say "  Joining a team?    todo workspace join <your team's workspace GitHub URL>"
-  say "  All commands:      todo help"
+  say "  New team?          taar workspace create"
+  say "  Joining a team?    taar workspace join <your team's workspace GitHub URL>"
+  say "  All commands:      taar help"
 }
 
 main "$@"

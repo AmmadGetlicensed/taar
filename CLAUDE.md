@@ -1,9 +1,9 @@
 # taar: developer notes for AI agents
 
-taar is the `todo` CLI: shared team todos built on Beads (`bd`). This repo is the tool only; a
-team's todos live in a separate workspace repo created by `todo workspace create`.
+taar is a CLI for shared team todos built on Beads (`bd`). This repo is the tool only; a
+team's todos live in a separate workspace repo created by `taar workspace create`.
 
-- `bin/taar`: the whole CLI (bash). Installed as `todo` and `taar` via symlinks in `~/.local/bin`.
+- `bin/taar`: the whole CLI (bash). Installed as `taar` via a symlink in `~/.local/bin`.
   Must stay compatible with macOS bash 3.2: no associative arrays, no `${var,,}`, no `mapfile`.
 - `install.sh`: the `curl | bash` installer. Keep all logic inside `main()`.
 - `tests/run.sh`: integration tests against the real Beads engine in an isolated `HOME`, with a
