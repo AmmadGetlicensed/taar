@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Fake GitHub CLI for tests. Keeps repo members and invitations as JSON in $FAKE_GH_DIR and
+# applies --jq expressions with jq, like the real `gh api`. User "ghost" does not exist.
+D="$FAKE_GH_DIR"
+echo "$*" >> "$D/calls"
+[ "$1" = auth ] && exit 0
+[ "$1" = api ] || { echo "fake gh: unsupported: $*" >&2; exit 1; }
+shift
+
+method=GET; expr=.; path=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) method="$2"; shift 2 ;;
+    --jq) expr="$2"; shift 2 ;;
+    -f|-F) shift 2 ;;
+    --paginate) shift ;;
+    *) path="$1"; shift ;;
+  esac
+done
+
+out() { printf '%s' "$1" | jq -r "$expr"; }
+is_member() { jq -e --arg u "$1" 'any(.[]; .login == $u)' "$D/collab.json" >/dev/null; }
+update() { jq "$@" > "$D/tmp.json" && mv "$D/tmp.json" "$file"; }
+
+user="${path##*/}"
+case "$method $path" in
+  "GET user")
+    out '{"login": "owner"}' ;;
+  "GET users/"*)
+    [ "$user" = ghost ] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    out "{\"login\": \"$user\"}" ;;
+  "GET repos/"*/collaborators)
+    out "$(cat "$D/collab.json")" ;;
+  "GET repos/"*/collaborators/*)
+    is_member "$user" || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
+  "GET repos/"*/invitations)
+    out "$(cat "$D/inv.json")" ;;
+  "PUT repos/"*/collaborators/*)
+    is_member "$user" && exit 0                     # 204: already has access
+    file="$D/inv.json"
+    update --arg u "$user" '. + [{id: (length + 100), invitee: {login: $u}, created_at: "2026-10-12T09:00:00Z"}]' "$file"
+    out '{"id": 1}' ;;
+  "DELETE repos/"*/invitations/*)
+    file="$D/inv.json"; update --argjson i "$user" 'map(select(.id != $i))' "$file" ;;
+  "DELETE repos/"*/collaborators/*)
+    file="$D/collab.json"; update --arg u "$user" 'map(select(.login != $u))' "$file" ;;
+  *)
+    echo "fake gh: unhandled $method $path" >&2; exit 1 ;;
+esac

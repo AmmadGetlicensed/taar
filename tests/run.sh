@@ -121,6 +121,29 @@ has    "one global block" "^1$" grep -c "BEGIN TAAR GLOBAL" "$HOME/.claude/CLAUD
 check  "agents --remove" taar agents --remove
 lacks  "global block removed" "TAAR GLOBAL" cat "$HOME/.claude/CLAUDE.md"
 
+echo "-- members (fake GitHub)"
+mkdir -p "$T/gh/bin" && export FAKE_GH_DIR="$T/gh"
+ln -s "$ROOT/tests/fake-gh" "$T/gh/bin/gh"
+printf '[{"login":"owner","role_name":"admin"},{"login":"alice","role_name":"write"}]' > "$T/gh/collab.json"
+printf '[]' > "$T/gh/inv.json"
+git -C "$T/ws" remote set-url origin https://github.com/owner/team.git
+gh_path="$T/gh/bin:$PATH"
+has    "members lists access" "alice +write" env PATH="$gh_path" taar members
+has    "members shows activity by git name" "Taar Test +[0-9]+ todos" env PATH="$gh_path" taar members
+has    "invite sends invitation" "Invited bob" env PATH="$gh_path" taar invite bob
+has    "invite prints join command" "taar workspace join https://github.com/owner/team" env PATH="$gh_path" taar invite @carol
+has    "pending invites listed" "bob +invited 2026-10-12" env PATH="$gh_path" taar members
+has    "invite existing member" "alice already has access" env PATH="$gh_path" taar invite alice
+check_fails "invite unknown user fails" env PATH="$gh_path" taar invite ghost
+has    "remove cancels pending invite" "Cancelled the pending invitation for bob" env PATH="$gh_path" taar remove bob
+lacks  "cancelled invite gone" "bob" env PATH="$gh_path" taar members
+check  "remove member" env PATH="$gh_path" taar remove alice -y
+lacks  "removed member gone" "alice" env PATH="$gh_path" taar members
+check_fails "cannot remove owner" env PATH="$gh_path" taar remove owner -y
+check_fails "remove non-member fails" env PATH="$gh_path" taar remove dave -y
+git -C "$T/ws" remote set-url origin "$T/remote.git"
+has    "members needs a GitHub remote" "not on github.com" env PATH="$gh_path" taar members
+
 echo "-- installer"
 check  "installer syntax" bash -n "$ROOT/install.sh"
 # Install from a local clone of the working tree (including uncommitted changes).

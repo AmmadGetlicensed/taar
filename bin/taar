@@ -492,6 +492,120 @@ cmd_agents() {
   rm -f "$blk"
 }
 
+# --- commands: members (GitHub repo access) ---------------------------------
+
+# owner/repo of the workspace's GitHub remote, e.g. AmmadGetlicensed/team-todos.
+workspace_repo() {
+  local url; url=$(git -C "$TODO_DIR" remote get-url origin 2>/dev/null) \
+    || die "this workspace has no GitHub remote, so it has no members to manage"
+  url="${url%.git}"; url="${url#git+}"; url="${url#*://}"; url="${url#*@}"; url="${url/://}"
+  case "$url" in
+    github.com/*/*) echo "${url#github.com/}" ;;
+    *) die "members are managed on GitHub; this workspace's remote is not on github.com" ;;
+  esac
+}
+
+require_gh() {
+  gh_ready || die "this needs the GitHub CLI, logged in as a workspace admin: brew install gh && gh auth login"
+}
+
+cmd_members() {
+  require_gh
+  local repo; repo=$(workspace_repo) || exit 1
+  local people invites
+  people=$(gh api "repos/$repo/collaborators" --paginate --jq '.[] | "\(.login)\t\(.role_name)"' 2>/dev/null) \
+    || die "could not read members of $repo (only workspace admins can see them)"
+  invites=$(gh api "repos/$repo/invitations" --paginate --jq '.[] | "\(.invitee.login)\t\(.created_at[0:10])"' 2>/dev/null)
+
+  echo "Members of $repo (people who can join and sync):"
+  printf '%s\n' "$people" | awk -F'\t' 'NF {printf "  %-24s %s\n", $1, $2}'
+  if [ -n "$invites" ]; then
+    echo
+    echo "Invited, not accepted yet:"
+    printf '%s\n' "$invites" | awk -F'\t' 'NF {printf "  %-24s invited %s\n", $1, $2}'
+  fi
+
+  echo
+  echo "Activity in todos (by git name; created or claimed):"
+  if ! command -v jq >/dev/null; then
+    echo "  (install jq to see activity: brew install jq)"
+    return 0
+  fi
+  local activity
+  activity=$(bd list --all --limit 0 --json 2>/dev/null | jq -r '
+    ([.[] | {p: .created_by, t: .updated_at}] + [.[] | select(.assignee != null and .assignee != "") | {p: .assignee, t: .updated_at}])
+    | map(select(.p != null and .p != "")) | group_by(.p)
+    | map({p: .[0].p, n: length, last: (map(.t) | max)}) | sort_by(.last) | reverse
+    | .[] | "\(.p)\t\(.n)\t\(.last[0:10])"')
+  if [ -z "$activity" ]; then
+    echo "  no todos yet"
+  else
+    printf '%s\n' "$activity" | awk -F'\t' '{printf "  %-24s %3d todos   last active %s\n", $1, $2, $3}'
+  fi
+}
+
+cmd_invite() {
+  local user="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -y|--yes) yes=1; shift ;;
+      -*) die "invite: unknown option $1" ;;
+      *) user="${1#@}"; shift ;;
+    esac
+  done
+  [ -n "$user" ] || die "usage: taar invite <github-username>"
+  require_gh
+  local repo; repo=$(workspace_repo) || exit 1
+  gh api "users/$user" --jq .login >/dev/null 2>&1 || die "no GitHub user named '$user'"
+
+  # PUT returns 201 with an invitation, or 204 if they already have access.
+  local out
+  out=$(gh api -X PUT "repos/$repo/collaborators/$user" --jq '.id // empty' 2>&1) \
+    || die "could not invite $user to $repo: $out"
+  if [ -z "$out" ]; then
+    echo "$user already has access to $repo."
+  else
+    echo "Invited $user to $repo. Once they accept the GitHub invitation (email or github.com/notifications),"
+    echo "they can join with:"
+  fi
+  echo
+  echo "  curl -fsSL https://raw.githubusercontent.com/AmmadGetlicensed/taar/main/install.sh | bash"
+  echo "  taar workspace join https://github.com/$repo"
+  return 0
+}
+
+cmd_remove() {
+  local user="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -y|--yes) yes=1; shift ;;
+      -*) die "remove: unknown option $1" ;;
+      *) user="${1#@}"; shift ;;
+    esac
+  done
+  [ -n "$user" ] || die "usage: taar remove <github-username>"
+  require_gh
+  local repo; repo=$(workspace_repo) || exit 1
+  [ "$(lower "$user")" = "$(lower "${repo%%/*}")" ] && die "$user owns $repo and cannot be removed"
+
+  # A pending invitation is cancelled; an existing member loses access.
+  local invite_id
+  invite_id=$(gh api "repos/$repo/invitations" --paginate \
+    --jq ".[] | select((.invitee.login | ascii_downcase) == \"$(lower "$user")\") | .id" 2>/dev/null | head -1)
+  if [ -n "$invite_id" ]; then
+    gh api -X DELETE "repos/$repo/invitations/$invite_id" >/dev/null || die "could not cancel the invitation"
+    echo "Cancelled the pending invitation for $user."
+    return 0
+  fi
+  gh api "repos/$repo/collaborators/$user" >/dev/null 2>&1 || die "$user is not a member of $repo"
+  if [ $yes = 0 ]; then
+    has_tty || die "remove: no terminal to confirm; pass -y"
+    ask_yn "Remove $user from $repo? They will no longer be able to sync." N || { echo "Cancelled."; return 0; }
+  fi
+  gh api -X DELETE "repos/$repo/collaborators/$user" >/dev/null || die "could not remove $user"
+  echo "Removed $user from $repo. Their existing local copy stays on their machine but can no longer sync."
+}
+
 # --- commands: project linking ----------------------------------------------
 
 cmd_init() {
@@ -673,6 +787,11 @@ Workspace (where your team's todos live)
   taar workspace             show the active workspace
   taar workspace use <path>  switch workspace
 
+Members (GitHub access to the workspace; needs gh)
+  taar members               who has access, pending invites, activity
+  taar invite <github-user>  invite someone (they accept on GitHub, then join)
+  taar remove <github-user>  remove access or cancel an invite
+
 Projects
   taar init                  link the current git project (asks a few questions)
   taar projects              list linked projects (* = current)
@@ -734,6 +853,9 @@ cd "$TODO_DIR" || die "cannot cd to $TODO_DIR"
 case "$1" in
   init)     shift; cmd_init "$@"; exit $? ;;
   projects) shift; cmd_projects; exit 0 ;;
+  members)  shift; cmd_members "$@"; exit $? ;;
+  invite)   shift; cmd_invite "$@"; exit $? ;;
+  remove)   shift; cmd_remove "$@"; exit $? ;;
   pull)     shift; git pull -q --rebase --autostash >/dev/null 2>&1 || warn "git pull of the workspace failed"
             exec bd dolt pull "$@" ;;
   push)     shift; exec bd dolt push "$@" ;;
