@@ -46,6 +46,22 @@ taar workspace join https://github.com/<owner>/<workspace>
 
 `taar workspace` shows the active workspace; `taar workspace use <path>` switches between several.
 
+## Members
+
+Who can join is controlled by access to the workspace's GitHub repo. The workspace owner (or an
+admin) manages it from the command line, using the GitHub CLI:
+
+```bash
+taar members               # who has access, pending invitations, and activity in todos
+taar invite alice          # sends a GitHub invitation; prints the join command to send her
+taar remove alice          # removes access (or cancels a pending invitation)
+```
+
+Joining needs your approval: people can only `taar workspace join` after accepting your invitation.
+Removing someone stops them syncing; their existing local copy stays on their machine. On a
+personal GitHub account every member can edit todos (read-only members need a GitHub organisation).
+Activity is shown by git name, from who created or claimed todos (needs `jq`, built into recent macOS).
+
 ## Link your projects
 
 Inside any git project (new or existing):
