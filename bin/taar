@@ -264,6 +264,8 @@ else
 fi
 REGISTRY="$TODO_DIR/projects.tsv"
 
+has_projects() { [ -f "$REGISTRY" ] && awk -F'\t' '!/^#/ && NF >= 2' "$REGISTRY" | grep -q .; }
+
 CURRENT_PROJECT=""
 CURRENT_DESC=""
 if [ -n "$TODO_DIR" ] && [ -n "$CURRENT_KEY" ] && entry=$(registry_lookup "$CURRENT_KEY"); then
@@ -349,6 +351,14 @@ upsert_block() {  # file begin end blockfile: replace the marked block, or appen
   fi
 }
 
+current_block() {  # file begin end: the marked block as it is now (markers included)
+  awk -v b="$2" -v e="$3" '
+    { l = $0; sub(/\r$/, "", l) }
+    index(l, b) == 1 { on = 1 }
+    on { print l }
+    on && index(l, e) == 1 { exit }' "$1"
+}
+
 remove_block() {  # file begin end
   [ "$(block_state "$1" "$2" "$3")" = none ] && return 0
   check_blocks "$1" "$2" "$3" || return 1
@@ -376,8 +386,9 @@ replace_bd_hook() {  # Claude settings.json: bd/todo prime -> taar prime
 agent_rules() {
   cat <<'EOF'
 - Start of session: `taar pull`, then `taar ready` for actionable todos.
-- `taar list` shows open todos (scoped to the current linked project); `--all` for every project,
-  `--closed` to include closed ones. `taar search <text>` finds todos, including closed ones.
+- `taar list` shows open todos of the current linked project; `--all` for every project (needed
+  outside a linked project), `--closed` to include closed ones. `taar search <text>` finds todos,
+  including closed ones.
 - Before working on a todo: `taar show <id>` to load its purpose, constraints, and progress notes.
 - Before creating one, check `taar list` / `taar search` for an existing match.
 - Create: `taar create "Title" -p critical|high|medium|low|backlog -d "Why: ... Goal: ... Constraints: ..."`
@@ -940,11 +951,15 @@ offer_global_agents() {  # choice(Y/N/"") yes(0/1)
 
 cmd_agents() {
   local blk f; blk=$(mktemp)
-  case "$1" in ""|--remove) ;; *) die "agents: unknown option $1 (use --remove to take the instructions out)" ;; esac
+  case "$1" in ""|--remove|--refresh) ;; *) die "agents: unknown option $1 (use --remove to take the instructions out)" ;; esac
   global_block > "$blk"
   local failed=0
   while IFS= read -r f; do
-    if [ "$1" = --remove ]; then
+    if [ "$1" = --refresh ]; then
+      [ "$(block_state "$f" "$GLOBAL_BEGIN" "$GLOBAL_END")" = ok ] || continue
+      current_block "$f" "$GLOBAL_BEGIN" "$GLOBAL_END" | cmp -s - "$blk" && continue
+      upsert_block "$f" "$GLOBAL_BEGIN" "$GLOBAL_END" "$blk" || failed=1
+    elif [ "$1" = --remove ]; then
       remove_block "$f" "$GLOBAL_BEGIN" "$GLOBAL_END" || failed=1
     else
       upsert_block "$f" "$GLOBAL_BEGIN" "$GLOBAL_END" "$blk" || failed=1
@@ -1290,7 +1305,12 @@ EOF
     echo "\`taar list/ready/search/count\` show only this project's todos; \`taar create\` tags them"
     echo "\`project:$CURRENT_PROJECT\` automatically. Add \`--all\` for every project."
   else
-    echo "Current directory is not a linked project, so \`taar list\` shows every project."
+    if has_projects; then
+      echo "Current directory is not a linked project: add \`--all\` to \`taar list/ready/search/count\`"
+      echo "to see every project's todos (without it they refuse to run here)."
+    else
+      echo "No projects are linked yet, so \`taar list\` shows every todo."
+    fi
     echo "\`taar init\` links a git project, but only run it when the user asks."
   fi
   echo
@@ -1516,7 +1536,10 @@ cmd_doctor() {
   else ok "project list ($(awk -F'\t' '!/^#/ && NF >= 2' "$REGISTRY" | grep -c .) linked)"; fi
   [ -n "$CURRENT_PROJECT" ] && ok "current project: $CURRENT_PROJECT"
 
-  if grep -qsF "$GLOBAL_BEGIN" "$HOME/.claude/CLAUDE.md"; then ok "AI agent instructions installed"
+  if grep -qsF "$GLOBAL_BEGIN" "$HOME/.claude/CLAUDE.md"; then
+    if global_block | cmp -s - <(current_block "$HOME/.claude/CLAUDE.md" "$GLOBAL_BEGIN" "$GLOBAL_END"); then
+      ok "AI agent instructions installed"
+    else note "AI agent instructions are from an older taar (taar agents updates them)"; fi
   else note "AI agents don't know about taar yet (taar agents)"; fi
   return $bad
 }
@@ -1568,7 +1591,7 @@ Maintenance
   taar help <command>        help for any command, e.g. taar help dep
 
 Inside a linked project, list/ready/search/count are scoped to it and create tags it, and the
-workspace that project is linked in is used automatically.
+workspace that project is linked in is used automatically. Elsewhere they need --all.
 Any other subcommand is passed through to Beads, e.g. \`taar stats\`, \`taar dep add\`.
 EOF
 }
@@ -1725,6 +1748,12 @@ case "$sub" in
     if [ $all = 0 ] && [ -n "$CURRENT_PROJECT" ]; then
       echo "Project: $CURRENT_PROJECT  (use --all for every project)" >&2
       args+=("--label" "project:$CURRENT_PROJECT")
+    elif [ $all = 0 ] && has_projects; then
+      case " ${args[*]} " in *" -h "*|*" --help "*) ;; *)
+        die "this folder is not a linked project, so there is nothing to scope to.
+  Every project's todos:   taar $sub --all
+  One project's todos:     run it inside that project (taar projects lists them)" ;;
+      esac
     fi ;;
   create|q)
     [ -n "$CURRENT_PROJECT" ] && args+=("--labels" "project:$CURRENT_PROJECT") ;;

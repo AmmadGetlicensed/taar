@@ -61,6 +61,10 @@ main() {
   fi
   say "  linked $bin/taar"
 
+  # Bring the AI agents' taar instructions up to date, where they were installed before.
+  local refreshed
+  refreshed=$("$home/bin/taar" agents --refresh 2>&1) && [ -n "$refreshed" ] && say "$refreshed"
+
   # PATH.
   case ":$PATH:" in
     *":$bin:"*) ;;

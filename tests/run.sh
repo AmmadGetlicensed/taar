@@ -116,8 +116,17 @@ check  "create outside project with --priority" in_dir "$T/plain" taar create "O
 has    "priority name stored as P1" "P1 Demo task" in_dir "$T/proj" taar list
 lacks  "project list hides other projects" "Other task" in_dir "$T/proj" taar list
 has    "project list --all shows everything" "Other task" in_dir "$T/proj" taar list --all
-has    "outside a project shows everything" "Demo task" in_dir "$T/plain" taar list
-has    "list -p high filters" "Demo task" in_dir "$T/plain" taar list -p high
+check_fails "outside a project, list needs --all" in_dir "$T/plain" taar list
+check  "a workspace with no linked projects needs no --all" in_dir "$T/plain" taar list -W solo
+has    "and says how to see everything" "taar list --all" in_dir "$T/plain" taar list
+check_fails "ready needs --all too" in_dir "$T/plain" taar ready
+check_fails "search needs --all too" in_dir "$T/plain" taar search Demo
+check_fails "count needs --all too" in_dir "$T/plain" taar count
+check_fails "--json needs --all too" in_dir "$T/plain" taar list --json
+has    "help still works outside a project" "Usage" in_dir "$T/plain" taar list --help
+has    "outside a project, --all shows everything" "Demo task" in_dir "$T/plain" taar list --all
+has    "list -p high filters" "Demo task" in_dir "$T/plain" taar list --all -p high
+has    "prime explains --all outside a project" "add \`--all\`" in_dir "$T/plain" taar prime
 lacks  "list -p high excludes low" "Other task" in_dir "$T/plain" taar list -p high
 DEMO_ID=$(id_of "$T/proj" "Demo task")
 check  "close a todo" in_dir "$T/proj" taar close "$DEMO_ID" --reason "done"
@@ -136,7 +145,7 @@ lacks  "piped output hides Beads setup tips" "bd setup" sh -c "cd '$T/proj' && t
 check  "todo mentioning bd setup" in_dir "$T/proj" taar create "Document bd setup claude for new hires" -q
 has    "piped output keeps todo titles that mention bd setup" "Document bd setup claude" sh -c "cd '$T/proj' && taar list | cat"
 has    "JSON output keeps every title" "Document bd setup claude" sh -c "cd '$T/proj' && taar list --json"
-check  "legacy TODO_DIR in the environment is ignored" env TODO_DIR="$T/not-a-workspace" taar list
+check  "legacy TODO_DIR in the environment is ignored" env TODO_DIR="$T/not-a-workspace" taar list --all
 has    "bad TAAR_WORKSPACE is named in the error" "TAAR_WORKSPACE=" env TAAR_WORKSPACE="$T/plain" taar list
 
 echo "-- taar speaks taar (no bd in Beads output)"
@@ -170,7 +179,7 @@ check  "delete the bd-title todo" taar delete "$BDT" --force
 same_as_beads() {  # taar's output for a data view equals Beads' own (minus Beads' plugin tip)
   local tip="💡 Tip: Install the beads plugin for automatic workflow context, or run 'bd setup claude' for CLI-only mode"
   # shellcheck disable=SC2068
-  diff -B <(cd "$T/ws" && bd $@ 2>/dev/null | grep -vxF -- "$tip") <(cd "$T/ws" && taar $@ 2>/dev/null)
+  diff -B <(cd "$T/ws" && bd $@ 2>/dev/null | grep -vxF -- "$tip") <(cd "$T/ws" && taar $@ --all 2>/dev/null)
 }
 check  "list output identical to Beads (minus its tip)" same_as_beads list
 check  "ready output identical to Beads" same_as_beads ready
@@ -185,7 +194,7 @@ has    "project link on remote after push" "link project second" git -C "$T/remo
 check  "push todos" taar push
 check  "join workspace" taar workspace join "$T/remote.git" --dir "$T/ws2" -y --no-agents
 has    "config now points at joined workspace" "workspace=$T/ws2" cat "$XDG_CONFIG_HOME/taar/config"
-has    "joined workspace sees todos" "Other task" in_dir "$T/plain" taar list
+has    "joined workspace sees todos" "Other task" in_dir "$T/plain" taar list --all
 has    "joined workspace knows linked projects" "demo" taar projects
 check  "colleague creates a todo" in_dir "$T/proj" taar create "From colleague" -p medium -q
 check  "colleague pushes" taar push
@@ -228,6 +237,17 @@ check  "agents installs global block" taar agents
 check  "agents block in ~/.claude/CLAUDE.md" grep -q "BEGIN TAAR GLOBAL" "$HOME/.claude/CLAUDE.md"
 check  "agents is idempotent" taar agents
 has    "one global block" "^1$" grep -c "BEGIN TAAR GLOBAL" "$HOME/.claude/CLAUDE.md"
+# Instructions from an older taar: doctor says so, --refresh (run by the installer) updates them.
+printf '# Mine\n\n<!-- BEGIN TAAR GLOBAL -->\nold rules\n<!-- END TAAR GLOBAL -->\n\nkeep me\n' > "$HOME/.claude/CLAUDE.md"
+has    "doctor spots outdated agent instructions" "from an older taar" taar doctor
+check  "agents --refresh" taar agents --refresh
+lacks  "refresh replaced the old rules" "old rules" cat "$HOME/.claude/CLAUDE.md"
+has    "refresh kept the rest of the file" "keep me" cat "$HOME/.claude/CLAUDE.md"
+has    "doctor is happy after refresh" "AI agent instructions installed" taar doctor
+check  "refresh is silent when up to date" sh -c '[ -z "$(taar agents --refresh)" ]'
+printf '# Not using taar\n' > "$T/no-block.md"; cp "$T/no-block.md" "$HOME/.claude/CLAUDE.md"
+check  "refresh leaves files without instructions alone" sh -c "taar agents --refresh && cmp '$HOME/.claude/CLAUDE.md' '$T/no-block.md'"
+check  "agents installs it again" taar agents
 check  "agents --remove" taar agents --remove
 lacks  "global block removed" "TAAR GLOBAL" cat "$HOME/.claude/CLAUDE.md"
 # A dotfiles-managed CLAUDE.md is a symlink: it must stay one, and the rest of it must not change.
@@ -300,21 +320,21 @@ check  "create a todo in that project" in_dir "$T/op" taar create "Other team ta
 check  "switch the active workspace back" taar workspace use team
 has    "project picks its own workspace" "Other team task" in_dir "$T/op" taar list
 has    "notice names the project's workspace" "Workspace: other \(this project is linked there" in_dir "$T/op" taar list
-lacks  "active workspace does not show it" "Other team task" in_dir "$T/plain" taar list
-has    "-W by name" "Other team task" in_dir "$T/plain" taar list -W other
-has    "--workspace=name" "Other team task" in_dir "$T/plain" taar list --workspace=other
-has    "-W by folder" "Other team task" in_dir "$T/plain" taar list -W "$T/other"
+lacks  "active workspace does not show it" "Other team task" in_dir "$T/plain" taar list --all
+has    "-W by name" "Other team task" in_dir "$T/plain" taar list -W other --all
+has    "--workspace=name" "Other team task" in_dir "$T/plain" taar list --workspace=other --all
+has    "-W by folder" "Other team task" in_dir "$T/plain" taar list -W "$T/other" --all
 has    "-W unknown name explains" "no workspace named 'nosuch'" taar list -W nosuch
 check_fails "-W unknown name fails" taar list -W nosuch
 has    "-W without a value fails fast" "needs a value" no_hang taar list -W
 check  "create with -W from anywhere" in_dir "$T/plain" taar create "Made via flag" -W other -q
-has    "todo landed in the named workspace" "Made via flag" taar list -W other
+has    "todo landed in the named workspace" "Made via flag" taar list -W other --all
 lacks  "and not in the active one" "Made via flag" in_dir "$T/plain" taar list
 has    "workspace show with -W explains" "chosen for this command" taar workspace -W other
 has    "workspace show in a project explains" "this project is linked in it" in_dir "$T/op" taar workspace
 has    "prime mentions other workspaces" "Other workspaces exist" taar prime
 check  "rename a workspace" taar workspace rename other team-b
-has    "renamed workspace works with -W" "Other team task" taar list -W team-b
+has    "renamed workspace works with -W" "Other team task" taar list -W team-b --all
 check_fails "old name no longer works" taar list -W other
 check_fails "rename to a taken name fails" taar workspace rename team-b team
 check  "a second folder with the same name" taar workspace create -y --name team-b --dir "$T/x/team-b" --no-github --no-agents
@@ -355,8 +375,8 @@ echo "-- several workspaces: QA regressions"
 # 1. TAAR_WORKSPACE: relative paths and names, like -W
 mkdir -p "$T/envcheck"
 has    "relative TAAR_WORKSPACE syncs, not 'Mac only'" "Push complete" in_dir "$T" env TAAR_WORKSPACE=other taar push
-has    "TAAR_WORKSPACE accepts a relative folder" "Other team task" in_dir "$T" env TAAR_WORKSPACE=./other taar list
-has    "TAAR_WORKSPACE accepts a name" "Other team task" env TAAR_WORKSPACE=other taar list
+has    "TAAR_WORKSPACE accepts a relative folder" "Other team task" in_dir "$T" env TAAR_WORKSPACE=./other taar list --all
+has    "TAAR_WORKSPACE accepts a name" "Other team task" env TAAR_WORKSPACE=other taar list --all
 # 2. SSH host-alias remotes get a valid sync address
 git -C "$T/lonely" remote set-url origin github-acme:org/lonely.git
 check_fails "sync remote fixed for an SSH alias (offline is fine)" sh -c "taar push -W lonely 2>&1 | grep -q 'todo sync is not set up'"
@@ -387,9 +407,9 @@ has    "init names the workspace" "workspace: other" in_dir "$T/op" taar init -y
 has    "init explains the project's own workspace" "already linked there" in_dir "$T/op" taar init -y --agent-files none --no-share
 # 6. -W parsing leaves text alone
 check  "a description that looks like --workspace is kept" in_dir "$T/plain" taar create "Doc flag" -d "--workspace=other" -q
-has    "description stored verbatim" "workspace=other" sh -c "taar show \$(taar list --json | python3 -I -c 'import json,sys; print([i[\"id\"] for i in json.load(sys.stdin) if i[\"title\"]==\"Doc flag\"][0])')"
+has    "description stored verbatim" "workspace=other" sh -c "taar show \$(taar list --all --json | python3 -I -c 'import json,sys; print([i[\"id\"] for i in json.load(sys.stdin) if i[\"title\"]==\"Doc flag\"][0])')"
 check  "a title of -W given with --title" in_dir "$T/plain" taar create --title -W -p low -q
-has    "title -W stored" " -W$" taar list
+has    "title -W stored" " -W$" taar list --all
 has    "-- stops taar's option parsing" "no workspace named" taar list -W nosuch -- -W other
 # 7/8. -W where it cannot apply
 has    "-W rejected for workspace use" "does not apply" taar workspace use team -W other
@@ -482,6 +502,9 @@ has    "taar linked to installed copy" "$T/install/bin/taar" readlink "$HOME/.lo
 check_fails "old todo link removed" test -L "$HOME/.local/bin/todo"
 has    "installed taar runs" "taar " taar version
 check  "installer re-run updates in place" install_taar
+printf '<!-- BEGIN TAAR GLOBAL -->\nold rules\n<!-- END TAAR GLOBAL -->\n' > "$HOME/.claude/CLAUDE.md"
+has    "installer refreshes outdated agent instructions" "updated taar instructions" install_taar
+lacks  "old agent rules gone after install" "old rules" cat "$HOME/.claude/CLAUDE.md"
 check  "upgrade works" taar upgrade
 git -C "$T/install" checkout -q --detach v-pin 2>/dev/null || { git -C "$T/src" tag v-pin && git -C "$T/install" fetch -q --tags && git -C "$T/install" checkout -q --detach v-pin; }
 has    "upgrade from an install pinned to a tag" "taar " taar upgrade

@@ -219,8 +219,9 @@ Project: backend-api  (use --all for every project)
 ...
 ```
 
-You only see **backend-api** todos because you are in that folder. Outside any linked project,
-you see everything.
+You only see **backend-api** todos because you are in that folder. Outside any linked project
+(your home folder, say), `list`, `ready`, `search` and `count` need `--all`, so you always know
+you are looking at every project. (A workspace with no linked projects shows everything anyway.)
 
 #### Add a todo, with its memory
 
@@ -291,7 +292,7 @@ Push complete.
 
 ```bash
 taar list                  # this project's open todos
-taar list --all            # every project
+taar list --all            # every project (needed outside a linked project)
 taar list --closed         # include finished todos
 taar list -p high          # only high priority
 taar search login          # by keyword (includes closed todos)
@@ -467,12 +468,12 @@ Your workspace repos are untouched. Projects linked with `taar init` keep their 
 | `taar invite <github-user>` | Invite someone to the workspace |
 | `taar remove <github-user>` | Remove access or cancel an invitation (`-y` skips confirmation) |
 | `taar pull` / `taar push` | Get / share changes |
-| `taar list` / `ready` / `search` / `count` | Scoped to the current project; `--all` for every project. `list` and `ready` show open todos (`list --closed` adds closed ones); `search` and `count` include closed todos |
+| `taar list` / `ready` / `search` / `count` | Scoped to the current project; `--all` for every project (required outside a linked project). `list` and `ready` show open todos (`list --closed` adds closed ones); `search` and `count` include closed todos |
 | `taar create "Title"` | New todo (auto-tagged with the project); `-p`, `-d` |
 | `taar show <id>` | Full details, notes and history |
 | `taar update <id>` | `--claim`, `--append-notes`, `-p`, `--title`, `--add-label`, ... |
 | `taar close <id>` | Finish a todo; `--reason` |
-| `taar agents [--remove]` | Add / remove global AI agent instructions |
+| `taar agents [--remove]` | Add / remove global AI agent instructions (`taar upgrade` keeps installed ones current) |
 | `taar prime [--hook-json]` | Workflow briefing for AI agents |
 | `taar doctor` | Check the setup and say how to fix problems |
 | `taar upgrade` / `taar version` / `taar help [command]` | Maintenance and help |
