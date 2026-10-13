@@ -48,6 +48,8 @@ case "$method $path" in
     file="$D/inv.json"; update --argjson i "$user" 'map(select(.id != $i))' "$file" ;;
   "DELETE repos/"*/collaborators/*)
     file="$D/collab.json"; update --arg u "$user" 'map(select((.login | ascii_downcase) != ($u | ascii_downcase)))' "$file" ;;
+  "GET repos/"*/*)                                  # the repo itself; $D/full_name simulates a rename
+    out "{\"full_name\": \"$(cat "$D/full_name" 2>/dev/null || echo "${path#repos/}")\"}" ;;
   *)
     echo "fake gh: unhandled $method $path" >&2; exit 1 ;;
 esac

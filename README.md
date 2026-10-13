@@ -386,6 +386,8 @@ taar workspace list
 | rename one | `taar workspace rename personal me` |
 | stop tracking one (its folder is kept) | `taar workspace forget me` |
 | put a this-Mac-only workspace on GitHub | `taar workspace connect` (new private repo via `gh`) or `taar workspace connect <empty-repo-url>` |
+| you moved or renamed the workspace's folder | `taar workspace move <name> <new-folder>` (or just `taar workspace use <new-folder>`) |
+| you renamed or moved its GitHub repo | `taar workspace set-url <new-url>`: updates git, todo sync and the README, and pushes |
 
 **Projects pick their workspace automatically.** Inside a project linked in a workspace other than
 the active one, taar uses that project's workspace and says so:
@@ -455,6 +457,8 @@ Your workspace repos are untouched. Projects linked with `taar init` keep their 
 | `taar workspace use <name\|path>` | Switch the active workspace |
 | `taar workspace rename <name> <new>` / `forget <name>` | Rename / stop tracking a workspace (folder kept) |
 | `taar workspace connect [<url>]` | Put a this-Mac-only workspace on GitHub |
+| `taar workspace move <name> <folder>` | The workspace's folder moved or was renamed |
+| `taar workspace set-url <url>` | The workspace's GitHub repo was renamed or moved |
 | `-W`, `--workspace <name\|path>` | Use another workspace for one command (not for the workspace-choosing commands) |
 | `taar pull --all-workspaces` / `taar push --all-workspaces` | Sync every workspace |
 | `taar init` | Link the current git project. Flags: `--name`, `-d`, `--agent-files CLAUDE.md,AGENTS.md\|none`, `--share`/`--no-share`, `--keep-beads`, `-y` |
@@ -542,6 +546,11 @@ created inside a linked project are tagged. Tag it yourself:
 **A colleague's changes aren't showing.** They need to `taar push`, then you `taar pull`.
 
 **`taar push` failed.** Usually someone pushed first: run `taar pull`, then `taar push` again.
+
+**I renamed the workspace's folder or its GitHub repo.** A renamed folder: `taar workspace move <name>
+<new-folder>`. A renamed GitHub repo: `taar workspace set-url <new-url>` (GitHub redirects the old
+URL for a while, which hides the problem; `taar doctor` points it out). `taar workspace rename` only
+changes taar's name for the workspace, not the folder or the repo.
 
 **Can I have several workspaces?** Yes, see [Several workspaces](#9-several-workspaces):
 `taar workspace list`, `taar workspace use <name>`, `-W <name>` for one command, and projects pick

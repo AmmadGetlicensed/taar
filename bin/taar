@@ -134,9 +134,9 @@ require_workspace() {
   if [ ! -d "$TODO_DIR/.beads" ]; then
     [ "$WS_REASON" = env ] && die "TAAR_WORKSPACE='$TAAR_WORKSPACE' is not a taar workspace (unset it to use your configured one)"
     die "workspace '$(ws_label "$TODO_DIR")' ($TODO_DIR) is missing or not set up.
-  See your workspaces:        taar workspace list
-  Switch to another one:      taar workspace use <name>
-  Or join your team's:        taar workspace join <github-url>"
+  Moved or renamed its folder?  taar workspace move $(ws_label "$TODO_DIR") <new-folder>
+  See your workspaces:          taar workspace list
+  Switch to another one:        taar workspace use <name>"
   fi
 }
 
@@ -233,7 +233,7 @@ done
 set -- ${_rest[@]+"${_rest[@]}"}
 if [ -n "$WS_FLAG" ]; then
   case "$1 $2" in
-    "workspace create"|"workspace join"|"workspace use"|"workspace list"|"workspace rename"|"workspace forget")
+    "workspace create"|"workspace join"|"workspace use"|"workspace list"|"workspace rename"|"workspace forget"|"workspace move")
       die "-W does not apply to 'taar workspace $2'" ;;
   esac
   for _a in "$@"; do [ "$_a" = --all-workspaces ] && die "use either -W or --all-workspaces, not both"; done
@@ -696,13 +696,92 @@ ws_join() {
   echo "Done. Try: taar list"
 }
 
+# Point a remembered workspace at the folder it now lives in (after moving or renaming the
+# folder). Keeps its name, and keeps it active if it was.
+ws_relocate() {  # name new-canonical-folder
+  local name="$1" new="$2" old raw
+  old=$(ws_path_of "$name")
+  ws_entries | awk -F'\t' -v n="$name" -v p="$new" 'BEGIN {OFS = "\t"} $1 == n {$2 = p} {print}' | ws_write
+  raw=$(config_get workspace)
+  if [ "$old" = "$ACTIVE_DIR" ] || [ "$raw" = "$old" ]; then config_set workspace "$new"; ACTIVE_DIR="$new"; fi
+  echo "Workspace '$name' now points at $new"
+}
+
+ws_move() {
+  [ $# -eq 2 ] || die "usage: taar workspace move <name> <new-folder>"
+  local old new other
+  old=$(ws_path_of "$1"); [ -n "$old" ] || die "no workspace named '$1' (see 'taar workspace list')"
+  new=$(abs_dir "$2"); new=$(cd "$new" 2>/dev/null && pwd -P) || die "no such folder: $2"
+  is_workspace "$new" || die "$new is not a taar workspace"
+  [ "$new" = "$old" ] && { echo "Workspace '$1' is already at $new."; return 0; }
+  other=$(ws_name_of "$new")
+  [ -z "$other" ] || die "$new is already remembered as '$other' (taar workspace forget $other first)"
+  ws_relocate "$1" "$new"
+}
+
+# A remembered workspace whose folder is gone, that this folder is most likely the new home of:
+# the one with the same name as the folder, else the active one if it is the only missing one.
+ws_moved_from() {  # new-canonical-folder -> name
+  local base n p missing="" missing_active="" count=0
+  base=$(slug "$(basename "$1")")
+  while IFS=$'\t' read -r n p; do
+    is_workspace "$p" && continue
+    [ "$n" = "$base" ] && { echo "$n"; return 0; }
+    missing="$n"; count=$((count + 1))
+    [ "$p" = "$ACTIVE_DIR" ] && missing_active="$n"
+  done < <(ws_entries)
+  [ "$count" -eq 1 ] && [ -n "$missing_active" ] && echo "$missing_active"
+  return 0
+}
+
 ws_use() {
   [ -n "$1" ] || die "usage: taar workspace use <name|path>"
-  local d name
+  local d name moved
   d=$(ws_resolve "$1") || die "'$1' is not a workspace name or folder (see 'taar workspace list')"
+  if [ -z "$(ws_name_of "$d")" ]; then
+    moved=$(ws_moved_from "$d")
+    [ -n "$moved" ] && ws_relocate "$moved" "$d" >/dev/null && echo "Recognised '$moved' in its new folder."
+  fi
   name=$(ws_register "$d")
   config_set workspace "$d"
   echo "Active workspace: $name ($d)"
+}
+
+# The workspace's GitHub repo was renamed or moved: point git, todo sync and the README at it.
+ws_set_url() {
+  [ $# -eq 1 ] || die "usage: taar workspace set-url <new-github-url>"
+  local url="$1" old
+  require_workspace
+  old=$(git -C "$TODO_DIR" remote get-url origin 2>/dev/null) || die "workspace '$(ws_label "$TODO_DIR")' has no remote yet (use: taar workspace connect)"
+  [ "$(normalize_url "$old")" = "$(normalize_url "$url")" ] && [ "$old" = "$url" ] && { echo "Already set to $url."; return 0; }
+  cd "$TODO_DIR" || die "cannot cd to $TODO_DIR"
+  git ls-remote -q "$url" HEAD >/dev/null 2>&1 || die "cannot reach $url (check the URL and your access); nothing changed"
+  git remote set-url origin "$url" || die "could not update the git remote"
+  echo "  git remote: $url"
+  ensure_todo_sync || die "git now points at $url, but todo sync could not be updated; run 'taar doctor'"
+  echo "  todo sync: $(dolt_remote_url "$url")"
+  # README: the join line and a title that was the old repo name.
+  if [ -f README.md ]; then
+    local tmp oldweb newweb oldname newname
+    oldweb="https://$(url_path "$old")"; newweb="https://$(url_path "$url")"
+    oldname=$(basename "$(url_path "$old")"); newname=$(basename "$(url_path "$url")")
+    tmp=$(mktemp)
+    awk -v o="$oldweb" -v n="$newweb" -v o2="$old" -v n2="$url" -v on="# $oldname" -v nn="# $newname" '
+      function swap(line, from, to,   i, out) {
+        out = ""
+        while (from != "" && (i = index(line, from)) > 0) { out = out substr(line, 1, i - 1) to; line = substr(line, i + length(from)) }
+        return out line
+      }
+      NR == 1 && $0 == on { print nn; next }
+      { print swap(swap($0, o2, n2), o, n) }' README.md > "$tmp"
+    if cmp -s "$tmp" README.md; then rm -f "$tmp"; else write_over README.md "$tmp"; echo "  README updated"; fi
+  fi
+  git add README.md .beads/config.yaml 2>/dev/null
+  if ! git diff --cached --quiet; then
+    git commit -q -m "taar: workspace moved to $url" >/dev/null 2>&1
+  fi
+  if push_workspace_git; then echo "  pushed"; else warn "could not push yet; run 'taar push'"; fi
+  echo "Workspace '$(ws_label "$TODO_DIR")' now syncs with $url"
 }
 
 ws_list() {
@@ -823,10 +902,12 @@ cmd_workspace() {
     use)    ws_use "$@" ;;
     list)   ws_list ;;
     rename) ws_rename "$@" ;;
+    move)   ws_move "$@" ;;
+    set-url) ws_set_url "$@" ;;
     connect) ws_connect "$@" ;;
     forget) ws_forget "$@" ;;
     show)   ws_show ;;
-    *) die "workspace: unknown command '$sub' (create, join, list, use, rename, forget, connect, show)" ;;
+    *) die "workspace: unknown command '$sub' (create, join, list, use, rename, move, set-url, forget, connect, show)" ;;
   esac
 }
 
@@ -1362,7 +1443,7 @@ cmd_doctor() {
     return $bad
   fi
   if [ ! -d "$TODO_DIR/.beads" ] || [ ! -f "$TODO_DIR/projects.tsv" ]; then
-    fail "workspace $TODO_DIR is missing or not a taar workspace (taar workspace use <name>)"
+    fail "workspace $TODO_DIR is missing or not a taar workspace (moved it? taar workspace move $(ws_label "$TODO_DIR") <new-folder>)"
     return $bad
   fi
   ok "workspace $(ws_label "$TODO_DIR") ($TODO_DIR)"
@@ -1373,6 +1454,18 @@ cmd_doctor() {
   if [ -z "$remote" ]; then
     note "no GitHub remote: todos stay on this Mac"
   else
+    # A renamed GitHub repo keeps working through a redirect, so say it before it breaks.
+    local gh_path gh_name
+    gh_path=$(url_path "$remote")
+    case "$(lower "$gh_path")" in
+      github.com/*/*)
+        if gh_ready; then
+          gh_name=$(gh api "repos/${gh_path#*/}" --jq .full_name 2>/dev/null)
+          if [ -n "$gh_name" ] && [ "$(lower "$gh_name")" != "$(lower "${gh_path#*/}")" ]; then
+            note "the GitHub repo was renamed to $gh_name (taar workspace set-url https://github.com/$gh_name)"
+          fi
+        fi ;;
+    esac
     if GIT_TERMINAL_PROMPT=0 git -C "$TODO_DIR" ls-remote -q origin HEAD >/dev/null 2>&1; then ok "GitHub reachable ($remote)"
     else fail "cannot reach $remote (offline, or no access? gh auth login)"; fi
     if (cd "$TODO_DIR" && bd dolt remote list 2>/dev/null) | grep -q '^origin '; then ok "todo sync remote configured"
@@ -1404,6 +1497,8 @@ Workspace (where your team's todos live)
   taar workspace list        all workspaces on this Mac (* = active)
   taar workspace use <name>  switch the active workspace (name or folder)
   taar workspace rename <name> <new>  /  taar workspace forget <name>
+  taar workspace move <name> <folder>   after moving or renaming the workspace's folder
+  taar workspace set-url <url>          after renaming or moving its GitHub repo
   taar workspace connect [<url>]  put a Mac-only workspace on GitHub
   -W, --workspace <name>     use another workspace for one command, e.g. taar list -W acme
   taar pull|push --all-workspaces

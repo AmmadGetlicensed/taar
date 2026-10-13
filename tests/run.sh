@@ -282,6 +282,9 @@ has    "invite rejects an invalid username" "not a valid GitHub username" env PA
 has    "invite accepts Enterprise Managed User logins" "Invited alice_acme" env PATH="$gh_path" taar invite alice_acme
 printf '[{"id":7,"invitee":null,"created_at":"2026-10-12T09:00:00Z"}]' > "$T/gh/inv.json"
 has    "members copes with an email invitation" "\\(by email\\)" env PATH="$gh_path" taar members
+printf 'owner/team-renamed' > "$T/gh/full_name"
+has    "doctor spots a renamed GitHub repo" "renamed to owner/team-renamed \\(taar workspace set-url" env PATH="$gh_path" taar doctor
+rm -f "$T/gh/full_name"
 git -C "$T/ws" remote set-url origin "$T/remote.git"
 has    "members needs a GitHub remote" "not on github.com" env PATH="$gh_path" taar members
 
@@ -408,6 +411,31 @@ git init -q --bare "$T/readme-ws.git"
 check  "connect it" taar workspace connect "$T/readme-ws.git"
 has    "README gets the join URL" "taar workspace join $T/readme-ws.git" cat "$T/readme-ws/README.md"
 check  "back to team after readme" taar workspace use team
+
+echo "-- moved folders and renamed repos"
+git init -q --bare "$T/movable.git"
+check  "workspace for the move tests" taar workspace create -y --name movable --dir "$T/movable" --url "$T/movable.git" --no-agents
+check  "a todo in it" in_dir "$T/plain" taar create "Moved todo" -q
+mv "$T/movable" "$T/movable-renamed"
+has    "a moved folder suggests 'move'" "taar workspace move movable" in_dir "$T/plain" taar list
+check  "move it" taar workspace move movable "$T/movable-renamed"
+has    "todos visible after move" "Moved todo" in_dir "$T/plain" taar list
+has    "registry points at the new folder" "^movable	$T/movable-renamed$" cat "$XDG_CONFIG_HOME/taar/workspaces"
+has    "still the active workspace" "^\\* movable " taar workspace list
+check_fails "move to a non-workspace fails" taar workspace move movable "$T/plain"
+mkdir -p "$T/y" && mv "$T/movable-renamed" "$T/y/movable"
+check  "use recognises the moved folder" taar workspace use "$T/y/movable"
+has    "recognised, not duplicated" "^1$" sh -c "taar workspace list | grep -c '^. movable'"
+cp -R "$T/movable.git" "$T/movable-new.git"
+check  "set-url after a repo rename" taar workspace set-url "$T/movable-new.git"
+has    "git remote updated" "^$T/movable-new.git$" git -C "$T/y/movable" remote get-url origin
+has    "todo sync updated" "git\\+file://$T/movable-new.git" sh -c "cd '$T/y/movable' && bd dolt remote list"
+has    "README join line updated" "taar workspace join $T/movable-new.git" cat "$T/y/movable/README.md"
+check  "push after set-url" taar push
+has    "new remote has the todos" "refs/dolt/data" git -C "$T/movable-new.git" for-each-ref
+check_fails "set-url to an unreachable repo changes nothing" taar workspace set-url "$T/nope.git"
+has    "remote unchanged after the failed set-url" "^$T/movable-new.git$" git -C "$T/y/movable" remote get-url origin
+check  "back to team after the move tests" taar workspace use team
 
 echo "-- installer"
 check  "installer syntax" bash -n "$ROOT/install.sh"
