@@ -22,6 +22,7 @@ TAAR_HOME=$(cd -P "$(dirname "$src")/.." && pwd)
 TAAR_VERSION=$(cat "$TAAR_HOME/VERSION" 2>/dev/null || echo dev)
 
 CALLER_DIR="$PWD"
+KEYBOARD=""; [ -t 0 ] && KEYBOARD=1     # taar's own input is a terminal (checked before any pipe)
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/taar"
 CONFIG_FILE="$CONFIG_DIR/config"
 
@@ -150,6 +151,10 @@ version_ge() {  # version_ge 1.3.2 1.3.1 -> true
 }
 
 bd_version() { bd version 2>/dev/null | awk '{print $3}'; }
+
+# Run Beads for taar's own bookkeeping: never interactive (its output is usually hidden, so a
+# question would wait forever with nothing on screen) and never reading the keyboard.
+bd_quiet() { BD_NON_INTERACTIVE=1 bd "$@" </dev/null; }
 
 check_bd() {
   command -v bd >/dev/null || die "the Beads engine (bd) is not installed. Run: brew install beads"
@@ -611,7 +616,7 @@ ws_create() {
   fi
 
   local log; log=$(mktemp)
-  if ! bd init --non-interactive --skip-agents --role maintainer --prefix "$prefix" -q >"$log" 2>&1; then
+  if ! bd_quiet init --non-interactive --skip-agents --role maintainer --prefix "$prefix" -q >"$log" 2>&1; then
     cat "$log" >&2; rm -f "$log"; die "Beads init failed"
   fi
   rm -f "$log"
@@ -619,7 +624,7 @@ ws_create() {
   git add -A && git commit -q -m "taar: initialise todo database" >/dev/null 2>&1
   if git remote get-url origin >/dev/null 2>&1; then
     GIT_TERMINAL_PROMPT=0 git push -q 2>/dev/null || warn "git push failed"
-    bd dolt push >/dev/null 2>&1 && echo "  pushed todo database" || warn "todo database push failed; run 'taar push' later"
+    bd_quiet dolt push >/dev/null 2>&1 && echo "  pushed todo database" || warn "todo database push failed; run 'taar push' later"
   fi
 
   CLEANUP_DIR=""; CLEANUP_NOTE=""
@@ -681,10 +686,17 @@ ws_join() {
 
   git config beads.role maintainer
   if [ ! -d .beads/embeddeddolt ] && [ ! -d .beads/dolt ]; then
-    bd bootstrap >/dev/null 2>&1 || die "could not restore the todo database (run 'bd bootstrap' in $dir for details)"
+    echo "  restoring the todo database from GitHub (this can take a minute)..."
+    local log; log=$(mktemp)
+    if ! bd_quiet bootstrap --yes >"$log" 2>&1; then
+      speak_taar < "$log" | tail -15 >&2; rm -f "$log"
+      die "could not restore the todo database (see above)"
+    fi
+    rm -f "$log"
   fi
   chmod 700 .beads
-  bd dolt pull >/dev/null 2>&1 || warn "could not pull latest todos; try 'taar pull'"
+  echo "  fetching the latest todos..."
+  bd_quiet dolt pull >/dev/null 2>&1 || warn "could not pull latest todos; try 'taar pull'"
   echo "  todo database ready"
 
   CLEANUP_DIR=""
@@ -870,7 +882,7 @@ ws_connect() {
     awk -v u="$url" '{gsub(/<workspace GitHub URL>/, u)} {print}' README.md > "$tmp" && write_over README.md "$tmp"
     git add README.md && git commit -q -m "taar: workspace README join URL" -- README.md && GIT_TERMINAL_PROMPT=0 git push -q 2>/dev/null
   fi
-  if bd dolt push >/dev/null 2>&1; then echo "  pushed the todos"; else warn "could not push the todos yet; run 'taar push'"; fi
+  if bd_quiet dolt push >/dev/null 2>&1; then echo "  pushed the todos"; else warn "could not push the todos yet; run 'taar push'"; fi
   echo
   echo "Workspace '$(ws_label "$TODO_DIR")' is now on GitHub. Colleagues join with:"
   echo "  taar workspace join $(shq "$url")"
@@ -986,7 +998,7 @@ cmd_members() {
     return 0
   fi
   local activity
-  activity=$(bd list --all --limit 0 --json 2>/dev/null | jq -r '
+  activity=$(bd_quiet list --all --limit 0 --json 2>/dev/null | jq -r '
     ([.[] | {p: .created_by, t: .updated_at}] + [.[] | select(.assignee != null and .assignee != "") | {p: .assignee, t: .updated_at}])
     | map(select(.p != null and .p != "")) | group_by(.p)
     | map({p: .[0].p, n: length, last: (map(.t) | max)}) | sort_by(.last) | reverse
@@ -1078,7 +1090,7 @@ cmd_remove() {
 
 # IDs of todos (open and closed) carrying a label. Uses jq when available.
 ids_with_label() {
-  local json; json=$(bd list --all --limit 0 --label "$1" --json 2>/dev/null) || return 1
+  local json; json=$(bd_quiet list --all --limit 0 --label "$1" --json 2>/dev/null) || return 1
   if command -v jq >/dev/null; then
     printf '%s' "$json" | jq -r '.[].id'
   else
@@ -1165,7 +1177,7 @@ cmd_init() {
     local ids; ids=$(ids_with_label "project:$old")
     if [ -n "$ids" ]; then
       # shellcheck disable=SC2086  # one ID per word
-      if bd label add $ids "project:$name" >/dev/null && bd label remove $ids "project:$old" >/dev/null; then
+      if bd_quiet label add $ids "project:$name" >/dev/null && bd_quiet label remove $ids "project:$old" >/dev/null; then
         moved=$(printf '%s\n' "$ids" | grep -c .)
         echo "  moved $moved todo(s) from project:$old to project:$name"
       else
@@ -1230,7 +1242,7 @@ cmd_init() {
     else
       warn "could not push the project link; it will be shared on your next 'taar push'"
     fi
-    [ "$moved" -gt 0 ] && { bd dolt push >/dev/null 2>&1 || warn "could not push the relabelled todos; run 'taar push'"; }
+    [ "$moved" -gt 0 ] && { bd_quiet dolt push >/dev/null 2>&1 || warn "could not push the relabelled todos; run 'taar push'"; }
   else
     echo "  project link saved locally (shared on your next 'taar push')"
   fi
@@ -1315,7 +1327,29 @@ statuses supersede swarm sync tag todo types unclaim undefer update upgrade vc v
 # bd-xyz and words containing "bd" are left alone. Only used on output that holds no todo content.
 # `speak_taar strict` is for output that may echo a todo title: only references in a command
 # position (line start, after a quote, backtick, "(", "$ " or ": ") change, and prose stays.
+# Pass on a line that has no newline yet once the output pauses: that is a question waiting for an
+# answer ("Continue? [y/N] "), and holding it back for a newline would leave a blank screen.
+show_questions() {
+  perl -e '
+    $| = 1; my $buf = ""; my $rin = ""; vec($rin, fileno(STDIN), 1) = 1;
+    while (1) {
+      my $n = select(my $rout = $rin, undef, undef, length($buf) ? 0.2 : undef);
+      if ($n > 0) {
+        my $r = sysread(STDIN, my $chunk, 65536);
+        last unless $r;
+        $buf .= $chunk;
+        print $1 while $buf =~ s/^([^\n]*\n)//;
+      } elsif (length $buf) { print "$buf\n"; $buf = ""; }
+    }
+    print $buf if length $buf;'
+}
+
 speak_taar() {
+  # Someone at the keyboard may need to see and answer a question; otherwise plain line mode.
+  if [ -n "$KEYBOARD" ]; then show_questions | speak_taar_lines "$@"; else speak_taar_lines "$@"; fi
+}
+
+speak_taar_lines() {
   awk -v strict="$([ "$1" = strict ] && echo 1)" -v cmds="$(printf '%s' "$BD_COMMANDS" | tr '\n' ' ')" '
     BEGIN { n = split(cmds, c, " "); for (i = 1; i <= n; i++) known[c[i]] = 1 }
     {
@@ -1341,6 +1375,7 @@ speak_taar() {
         line = post
       }
       print out line
+      fflush()
     }'
 }
 
@@ -1408,12 +1443,12 @@ ensure_todo_sync() {
   local origin want have
   origin=$(git -C "$TODO_DIR" remote get-url origin 2>/dev/null) || return 0
   want=$(dolt_remote_url "$origin")
-  have=$( (cd "$TODO_DIR" && bd dolt remote list 2>/dev/null) | awk '$1 == "origin" {print $2; exit}')
+  have=$( (cd "$TODO_DIR" && bd_quiet dolt remote list 2>/dev/null) | awk '$1 == "origin" {print $2; exit}')
   [ "$have" = "$want" ] && return 0
   # Missing, or pointing somewhere else (e.g. the workspace's repo was renamed): set it again.
-  [ -n "$have" ] && (cd "$TODO_DIR" && bd dolt remote remove origin >/dev/null 2>&1)
-  (cd "$TODO_DIR" && bd dolt remote add origin "$want" --allow-git-origin >/dev/null 2>&1) \
-    && (cd "$TODO_DIR" && bd dolt remote list 2>/dev/null) | grep -q '^origin '
+  [ -n "$have" ] && (cd "$TODO_DIR" && bd_quiet dolt remote remove origin >/dev/null 2>&1)
+  (cd "$TODO_DIR" && bd_quiet dolt remote add origin "$want" --allow-git-origin >/dev/null 2>&1) \
+    && (cd "$TODO_DIR" && bd_quiet dolt remote list 2>/dev/null) | grep -q '^origin '
 }
 
 # --- commands: doctor -------------------------------------------------------
@@ -1468,7 +1503,7 @@ cmd_doctor() {
     esac
     if GIT_TERMINAL_PROMPT=0 git -C "$TODO_DIR" ls-remote -q origin HEAD >/dev/null 2>&1; then ok "GitHub reachable ($remote)"
     else fail "cannot reach $remote (offline, or no access? gh auth login)"; fi
-    if (cd "$TODO_DIR" && bd dolt remote list 2>/dev/null) | grep -q '^origin '; then ok "todo sync remote configured"
+    if (cd "$TODO_DIR" && bd_quiet dolt remote list 2>/dev/null) | grep -q '^origin '; then ok "todo sync remote configured"
     elif ensure_todo_sync; then ok "todo sync remote was missing; set it up"
     else fail "todo sync remote missing and could not be set up from $remote"; fi
     if [ -n "$(git -C "$TODO_DIR" rev-list '@{u}..HEAD' 2>/dev/null)" ]; then note "project links not shared yet (taar push)"; fi

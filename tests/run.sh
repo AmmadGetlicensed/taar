@@ -437,6 +437,36 @@ check_fails "set-url to an unreachable repo changes nothing" taar workspace set-
 has    "remote unchanged after the failed set-url" "^$T/movable-new.git$" git -C "$T/y/movable" remote get-url origin
 check  "back to team after the move tests" taar workspace use team
 
+echo "-- interactive terminal (no BD_NON_INTERACTIVE, like a real colleague)"
+# A hidden Beads question used to hang 'workspace join' with nothing on screen.
+check  "join in a real terminal finishes without any input" env -u BD_NON_INTERACTIVE /usr/bin/expect -c "
+  set timeout 90
+  spawn taar workspace join $T/remote.git --dir $T/tty-join -y --no-agents
+  expect {
+    \"todo database ready\" { expect eof; exit 0 }
+    timeout { exit 1 }
+    eof { exit 2 }
+  }"
+check  "join shows progress" grep -q . "$T/tty-join/projects.tsv"
+check  "back to team after tty join" taar workspace use team
+# A Beads command that asks a question must show it before the answer, through taar's filter.
+mkdir -p "$T/fakebd"
+cat > "$T/fakebd/bd" <<FAKE
+#!/bin/sh
+if [ "\$1" = purge ] && [ "\$2" = --taar-question-test ]; then
+  printf 'Really run bd purge? [y/N] '; read a; echo "answer=\$a"; exit 0
+fi
+exec $(command -v bd) "\$@"
+FAKE
+chmod +x "$T/fakebd/bd"
+check  "a Beads question is visible before it is answered" env -u BD_NON_INTERACTIVE PATH="$T/fakebd:$PATH" /usr/bin/expect -c "
+  set timeout 5
+  spawn taar purge --taar-question-test
+  expect {
+    \"Really run taar purge?\" { send \"y\\r\"; expect \"answer=y\" { exit 0 } timeout { exit 3 } }
+    timeout { exit 1 }
+  }"
+
 echo "-- installer"
 check  "installer syntax" bash -n "$ROOT/install.sh"
 # Install from a local clone of the working tree (including uncommitted changes).
