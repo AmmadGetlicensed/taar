@@ -289,6 +289,7 @@ Push complete.
 
 `taar push` sends your changes to GitHub; colleagues see them after their next `taar pull`.
 **Nothing syncs on its own:** `taar pull` when you start, `taar push` when you finish.
+If someone pushed while you worked, `taar push` brings their changes in first, then pushes.
 
 #### Finding things
 

@@ -207,6 +207,16 @@ check  "colleague pushes" taar push
 check  "switch back to first workspace" taar workspace use "$T/ws"
 check  "pull colleague's changes" taar pull
 has    "first workspace sees colleague's todo" "From colleague" in_dir "$T/proj" taar list
+# Both change todos; the colleague pushes first. Our push brings theirs in, then pushes.
+check  "we create a todo" in_dir "$T/proj" taar create "Ours, not pushed yet" -q
+check  "colleague creates another" in_dir "$T/proj" taar create "Theirs, pushed first" -q -W "$T/ws2"
+check  "colleague pushes first" taar push -W "$T/ws2"
+has    "our push pulls their changes first" "Someone pushed todos first" taar push
+has    "and then pushes" "Push complete" sh -c "taar push 2>&1"
+has    "we have their todo" "Theirs, pushed first" in_dir "$T/proj" taar list
+check  "colleague pulls" taar pull -W "$T/ws2"
+has    "colleague has ours" "Ours, not pushed yet" in_dir "$T/proj" taar list -W "$T/ws2"
+lacks  "no Dolt hint shown" "dolt pull" sh -c "taar push 2>&1"
 check_fails "use rejects non-workspace" taar workspace use "$T/plain"
 check_fails "join rejects non-workspace repo" taar workspace join "$T/proj" --dir "$T/nope" -y --no-agents
 check_fails "failed join leaves no clone behind" test -e "$T/nope"

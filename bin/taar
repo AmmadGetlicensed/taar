@@ -1452,6 +1452,21 @@ bd_taar() {
   return "${rc:-1}"
 }
 
+# Push todos. If someone pushed first, bring their changes in and push again, rather than
+# stopping with Dolt's "integrate the remote changes" hint.
+push_todos() {
+  local log rc; log=$(mktemp)
+  bd_taar dolt push "$@" >"$log" 2>&1; rc=$?
+  if [ $rc != 0 ] && grep -qiE 'integrate the remote changes|non-fast-forward|fetch first' "$log"; then
+    rm -f "$log"
+    echo "Someone pushed todos first; pulling their changes..."
+    bd_taar dolt pull || die "could not pull their changes; run 'taar pull', then 'taar push'"
+    bd_taar dolt push "$@"; return $?
+  fi
+  cat "$log"; rm -f "$log"
+  return $rc
+}
+
 # Dolt remote URL for a git remote URL (Beads syncs todos through git+<url>).
 dolt_remote_url() {
   case "$1" in
@@ -1724,7 +1739,7 @@ case "$1" in
             push_workspace_git || {
               sync_workspace_git && push_workspace_git
             } || warn "could not push project links; run 'taar pull' and try again"
-            bd_taar dolt push "$@"; exit $? ;;
+            push_todos "$@"; exit $? ;;
 esac
 
 sub="$1"
