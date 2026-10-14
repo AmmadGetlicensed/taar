@@ -156,6 +156,14 @@ bd_version() { bd version 2>/dev/null | awk '{print $3}'; }
 # question would wait forever with nothing on screen) and never reading the keyboard.
 bd_quiet() { BD_NON_INTERACTIVE=1 bd "$@" </dev/null; }
 
+# New todo IDs get 8 random characters after the prefix (Beads starts at 3). It is a setting in
+# the workspace's database, so it reaches everyone with the next push. Run inside the workspace.
+ID_LENGTH=8
+ensure_id_length() {
+  [ "$(bd_quiet config get min_hash_length 2>/dev/null)" = "$ID_LENGTH" ] && return 0
+  bd_quiet config set min_hash_length "$ID_LENGTH" >/dev/null 2>&1
+}
+
 check_bd() {
   command -v bd >/dev/null || die "the Beads engine (bd) is not installed. Run: brew install beads"
   local v; v=$(bd_version)
@@ -591,7 +599,7 @@ ws_create() {
   if [ -e "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then die "$dir already exists and is not empty"; fi
 
   if [ -z "$prefix" ]; then
-    if [ $yes = 1 ]; then prefix=taar; else prefix=$(ask "Todo ID prefix (IDs look like <prefix>-a1b)" taar) || exit 1; fi
+    if [ $yes = 1 ]; then prefix=taar; else prefix=$(ask "Todo ID prefix (IDs look like <prefix>-a1b2c3d4)" taar) || exit 1; fi
   fi
   prefix=$(lower "$prefix" | tr -cd 'a-z0-9'); [ -n "$prefix" ] || die "prefix must contain letters or digits"
 
@@ -632,6 +640,7 @@ ws_create() {
   fi
   rm -f "$log"
   chmod 700 .beads
+  ensure_id_length || warn "could not set the todo ID length"
   git add -A && git commit -q -m "taar: initialise todo database" >/dev/null 2>&1
   if git remote get-url origin >/dev/null 2>&1; then
     GIT_TERMINAL_PROMPT=0 git push -q 2>/dev/null || warn "git push failed"
@@ -1710,6 +1719,7 @@ case "$1" in
             bd_taar dolt pull "$@"; exit $? ;;
   push)     shift
             ensure_todo_sync || die "todo sync is not set up for this workspace; run 'taar doctor'"
+            ensure_id_length
             # Share project links committed locally (e.g. `taar init --no-share`) too.
             push_workspace_git || {
               sync_workspace_git && push_workspace_git
@@ -1756,6 +1766,7 @@ case "$sub" in
       esac
     fi ;;
   create|q)
+    ensure_id_length
     [ -n "$CURRENT_PROJECT" ] && args+=("--labels" "project:$CURRENT_PROJECT") ;;
   stats|status)
     [ -n "$CURRENT_PROJECT" ] && [ $all = 0 ] && \

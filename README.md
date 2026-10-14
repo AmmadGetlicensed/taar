@@ -104,7 +104,7 @@ Creating a new taar workspace for your team.
 
 Workspace name (also the GitHub repo name) [team-todos]: acme-todos
 Where to keep it on this Mac [/Users/ammad/Development/acme-todos]:
-Todo ID prefix (IDs look like <prefix>-a1b) [taar]:
+Todo ID prefix (IDs look like <prefix>-a1b2c3d4) [taar]:
 Create private GitHub repo ammad/acme-todos? [Y/n]: y
 
   created private GitHub repo ammad/acme-todos
@@ -119,7 +119,9 @@ Done. Try: taar create "My first todo" -p medium
 - The GitHub repo is created **private, in your account**, using the
   [GitHub CLI](https://cli.github.com) (`gh`). No `gh`? Create an empty repo on GitHub yourself and
   paste its URL when asked; or leave it blank to keep the workspace on this Mac only.
-- The **ID prefix** is what todo IDs start with (`taar-4v0`, `acme-4v0`, ...).
+- The **ID prefix** is what todo IDs start with (`taar-4v0k9m2x`, `acme-4v0k9m2x`, ...). The 8
+  random characters after it keep IDs unique across the whole team. (Workspaces from before taar
+  0.7.3 switch to 8 on their next `taar create` or `taar push`; existing todos keep their IDs.)
 - Saying yes to the last question teaches your AI agents to use taar (see
   [step 7](#7-working-with-ai-agents)).
 
@@ -214,8 +216,8 @@ taar ready
 ```
 ```
 Project: backend-api  (use --all for every project)
-○ taar-4v0 P1 Fix slow login query
-○ taar-47t P2 Add rate limiting
+○ taar-4v0k9m2x P1 Fix slow login query
+○ taar-47tq8w1n P2 Add rate limiting
 ...
 ```
 
@@ -231,7 +233,7 @@ Goal: under 500ms.
 Constraints: no API changes."
 ```
 ```
-✓ Created issue: taar-4v0 — Fix slow login query
+✓ Created issue: taar-4v0k9m2x — Fix slow login query
   Priority: P1
   Status: open
 ```
@@ -253,12 +255,12 @@ Constraints: no API changes."
 #### Work on it
 
 ```bash
-taar show taar-4v0                     # read purpose, constraints and progress
-taar update taar-4v0 --claim           # it's mine, in progress
-taar update taar-4v0 --append-notes "Missing index on users.email. Next: add migration."
+taar show taar-4v0k9m2x                     # read purpose, constraints and progress
+taar update taar-4v0k9m2x --claim           # it's mine, in progress
+taar update taar-4v0k9m2x --append-notes "Missing index on users.email. Next: add migration."
 ```
 ```
-◐ taar-4v0 · Fix slow login query   [P1 · IN_PROGRESS]
+◐ taar-4v0k9m2x · Fix slow login query   [P1 · IN_PROGRESS]
 Created by: Ammad Khan · Assignee: Ammad Khan · Type: task
 ...
 DESCRIPTION
@@ -271,16 +273,16 @@ LABELS: project:backend-api
 ```
 
 Notes are **appended**, never overwritten. Tomorrow you, Sara, or an AI agent can run
-`taar show taar-4v0` and continue where you stopped.
+`taar show taar-4v0k9m2x` and continue where you stopped.
 
 #### Finish it and share
 
 ```bash
-taar close taar-4v0 --reason "Index added, login now 180ms"
+taar close taar-4v0k9m2x --reason "Index added, login now 180ms"
 taar push
 ```
 ```
-✓ Closed taar-4v0 — Fix slow login query: Index added, login now 180ms
+✓ Closed taar-4v0k9m2x — Fix slow login query: Index added, login now 180ms
 Pushing to Dolt remote...
 Push complete.
 ```
@@ -296,7 +298,7 @@ taar list --all            # every project (needed outside a linked project)
 taar list --closed         # include finished todos
 taar list -p high          # only high priority
 taar search login          # by keyword (includes closed todos)
-taar update taar-47t -p critical --title "Add rate limiting (urgent)"   # change a todo
+taar update taar-47tq8w1n -p critical --title "Add rate limiting (urgent)"   # change a todo
 ```
 
 Anything taar doesn't handle itself goes to Beads, so `taar stats`, `taar dep add`,
@@ -312,7 +314,7 @@ about taar in every project. Just talk to them:
 
 > "Add a todo to add rate limiting to the login endpoint, medium priority."
 > "What's left on this project?"
-> "Pick up taar-47t and continue from the notes."
+> "Pick up taar-47tq8w1n and continue from the notes."
 
 The agent runs `taar ready`, `taar show`, `taar create`, records progress with
 `--append-notes`, and runs `taar push` at the end of the session. Agents are told never to call

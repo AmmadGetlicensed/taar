@@ -114,6 +114,11 @@ echo "-- scoping and priorities"
 check  "create in project with priority name" in_dir "$T/proj" taar create "Demo task" -p high -d "in project" -q
 check  "create outside project with --priority" in_dir "$T/plain" taar create "Other task" --priority low -d "no project" -q
 has    "priority name stored as P1" "P1 Demo task" in_dir "$T/proj" taar list
+has    "todo IDs have 8 characters" "tst-[a-z0-9]{8} P1 Demo task" in_dir "$T/proj" taar list
+has    "new workspaces store the ID length" "^8$" sh -c "cd '$T/ws' && bd config get min_hash_length"
+(cd "$T/ws" && bd config unset min_hash_length >/dev/null 2>&1)
+check  "create in a workspace from an older taar" in_dir "$T/proj" taar create "Long id task" -q
+has    "it gets 8-character IDs too" "tst-[a-z0-9]{8} P2 Long id task" in_dir "$T/proj" taar list
 lacks  "project list hides other projects" "Other task" in_dir "$T/proj" taar list
 has    "project list --all shows everything" "Other task" in_dir "$T/proj" taar list --all
 check_fails "outside a project, list needs --all" in_dir "$T/plain" taar list
@@ -193,6 +198,7 @@ check  "push shares unpushed project links" taar push
 has    "project link on remote after push" "link project second" git -C "$T/remote.git" log --oneline
 check  "push todos" taar push
 check  "join workspace" taar workspace join "$T/remote.git" --dir "$T/ws2" -y --no-agents
+has    "joiners get the ID length from the database" "^8$" sh -c "cd '$T/ws2' && bd config get min_hash_length"
 has    "config now points at joined workspace" "workspace=$T/ws2" cat "$XDG_CONFIG_HOME/taar/config"
 has    "joined workspace sees todos" "Other task" in_dir "$T/plain" taar list --all
 has    "joined workspace knows linked projects" "demo" taar projects
