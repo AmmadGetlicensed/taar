@@ -400,6 +400,9 @@ agent_rules() {
 - Before working on a todo: `taar show <id>` to load its purpose, constraints, and progress notes.
 - Before creating one, check `taar list` / `taar search` for an existing match.
 - Create: `taar create "Title" -p critical|high|medium|low|backlog -d "Why: ... Goal: ... Constraints: ..."`
+- For a commitment, record where it came from: `--promised "<where, who>"` (the user committed to it),
+  `--requested "<where, who>"` (someone asked for it), or `--suggested "<why>"` (an agent's idea,
+  nobody committed). Find them with `taar list --label source:promised`.
 - Work: `taar update <id> --claim`; record discoveries, decisions, blockers and next steps with
   `taar update <id> --append-notes "..."`. Never overwrite existing descriptions or notes.
 - Finish: `taar close <id> --reason "..."`.
@@ -1601,6 +1604,8 @@ Daily use
   taar search <text>         includes closed todos
   taar show <id>
   taar create "Title" -p critical|high|medium|low|backlog -d "Why / Goal / Constraints"
+    --promised|--requested|--suggested "<where, who>"   where it came from (also on update);
+                                adds a source:<kind> label, e.g. taar list --label source:promised
   taar update <id> --claim | --append-notes "..." | -p high | --title "..."
   taar close <id> --reason "..."
 
@@ -1743,22 +1748,68 @@ case "$1" in
 esac
 
 sub="$1"
+is_text_flag() {  # flags whose value is free text, never to be read as a taar option
+  case "$1" in
+    -d|--description|--title|--notes|--append-notes|--design|--acceptance|-r|--reason|-m|--message|--body) return 0 ;;
+  esac
+  return 1
+}
+
+# Where a todo came from (--promised / --requested / --suggested "<where, who>"): a source:<kind>
+# label to filter on, and a dated Source line at the top of the notes.
+add_source() {  # label-flag notes-flag
+  local line i n
+  line="Source: $src_kind · $src_ref (recorded $(date +%Y-%m-%d))"
+  args+=("$1" "source:$src_kind")
+  n=${#args[@]}; i=0
+  while [ $i -lt $n ]; do
+    case "${args[$i]}" in
+      "$2")   [ $((i+1)) -lt $n ] && args[i+1]="$line
+${args[i+1]}"; return ;;
+      "$2"=*) args[i]="$2=$line
+${args[i]#*=}"; return ;;
+    esac
+    if is_text_flag "${args[$i]}"; then i=$((i+2)); else i=$((i+1)); fi
+  done
+  args+=("$2" "$line")
+}
+
 all=0
 closed=0
 args=()
 expect_priority=0
+src_kind=""
+src_ref=""
+expect_src=0
+prev=""
+after_dd=0
 for arg in "$@"; do
+  if [ $after_dd = 1 ]; then args+=("$arg"); continue; fi
   if [ "$expect_priority" = 1 ]; then
-    args+=("$(priority_num "$arg")"); expect_priority=0; continue
+    args+=("$(priority_num "$arg")"); expect_priority=0; prev=""; continue
   fi
+  if [ $expect_src = 1 ]; then src_ref="$arg"; expect_src=0; prev=""; continue; fi
+  if is_text_flag "$prev"; then args+=("$arg"); prev=""; continue; fi
   case "$arg" in
+    --)            args+=("$arg"); after_dd=1 ;;
     -p|--priority) args+=("$arg"); expect_priority=1 ;;
     --priority=*)  args+=("--priority=$(priority_num "${arg#--priority=}")") ;;
     --all)         all=1 ;;
     --closed)      closed=1 ;;
+    --promised|--requested|--suggested|--promised=*|--requested=*|--suggested=*)
+      case "$sub" in create|update) ;; *) die "${arg%%=*} works with 'taar create' and 'taar update' only" ;; esac
+      kind="${arg#--}"; kind="${kind%%=*}"
+      [ -z "$src_kind" ] || [ "$src_kind" = "$kind" ] \
+        || die "a todo has one source: use only one of --promised, --requested, --suggested"
+      src_kind="$kind"
+      case "$arg" in *=*) src_ref="${arg#*=}" ;; *) expect_src=1 ;; esac ;;
     *)             args+=("$arg") ;;
   esac
+  prev="$arg"
 done
+if [ -n "$src_kind" ] && [ -z "$src_ref" ]; then
+  die "--$src_kind needs where it came from and who, e.g. --$src_kind \"Slack DM with Alex\""
+fi
 
 case "$sub" in
   list|ready|search|count)
@@ -1782,7 +1833,12 @@ case "$sub" in
     fi ;;
   create|q)
     ensure_id_length
-    [ -n "$CURRENT_PROJECT" ] && args+=("--labels" "project:$CURRENT_PROJECT") ;;
+    [ -n "$CURRENT_PROJECT" ] && args+=("--labels" "project:$CURRENT_PROJECT")
+    [ -n "$src_kind" ] && add_source --labels --notes ;;
+  update)
+    [ -n "$src_kind" ] && add_source --add-label --append-notes
+    [ $all = 1 ] && args+=("--all")
+    [ $closed = 1 ] && args+=("--closed") ;;
   stats|status)
     [ -n "$CURRENT_PROJECT" ] && [ $all = 0 ] && \
       echo "Note: these figures cover every project. For $CURRENT_PROJECT only: taar count --by-status" >&2 ;;

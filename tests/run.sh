@@ -430,6 +430,27 @@ has    "-- stops taar's option parsing" "no workspace named" taar list -W nosuch
 # 7/8. -W where it cannot apply
 has    "-W rejected for workspace use" "does not apply" taar workspace use team -W other
 has    "-W rejected for workspace create" "does not apply" taar workspace create -y --name z --dir "$T/z" -W other
+
+echo "-- commitment source (--promised / --requested / --suggested)"
+id_of() { taar list --all --json | python3 -I -c 'import json,sys; t=sys.argv[1]; print([i["id"] for i in json.load(sys.stdin) if i["title"]==t][0])' "$1"; }
+check  "create with --promised" in_dir "$T/proj" taar create "Send timings" --promised "standup, Alex" -q
+has    "promised todo found by its label" "Send timings" in_dir "$T/proj" taar list --label source:promised
+sid=$(id_of "Send timings")
+has    "source line in notes" "Source: promised · standup, Alex \(recorded [0-9-]{10}\)" taar show "$sid"
+check  "--requested=value form" in_dir "$T/proj" taar create "Review PR" --requested="Slack DM from Sara" --notes "first note" -q
+sid=$(id_of "Review PR")
+has    "source prepended to given notes" "Source: requested · Slack DM from Sara" taar show "$sid"
+has    "given notes kept" "first note" taar show "$sid"
+lacks  "requested todo is not promised" "Review PR" in_dir "$T/proj" taar list --label source:promised
+has    "source flag needs a value" "needs where it came from" in_dir "$T/proj" taar create "No source" --promised
+has    "empty source refused" "needs where it came from" in_dir "$T/proj" taar create "No source" --promised ""
+has    "one source per todo" "one source" in_dir "$T/proj" taar create "Two" --promised a --requested b
+has    "source flags refused elsewhere" "works with 'taar create' and 'taar update' only" taar list --all --promised x
+check  "a description that looks like --promised is kept" in_dir "$T/plain" taar create "Flag text" -d "--promised" -q
+lacks  "no source label from description text" "Flag text" taar list --all --label source:promised
+sid=$(id_of "Flag text")
+check  "update adds a source" taar update "$sid" --suggested "agent idea from review"
+has    "updated todo has the label" "Flag text" taar list --all --label source:suggested
 check_fails "nothing created by the rejected command" test -e "$T/z"
 has    "-W and --all-workspaces conflict" "either -W or --all-workspaces" taar pull --all-workspaces -W other
 check  "forget leaves one: it becomes active" sh -c "

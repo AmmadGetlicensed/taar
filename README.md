@@ -251,6 +251,23 @@ Constraints: no API changes."
 
 - `-d` / `--description` is the todo's memory. A good pattern is **Why / Goal / Constraints**, so
   anyone (or any AI agent) can pick it up later.
+- For a commitment, say where it came from. A promise you made is not the same as a request you
+  received, or an idea an AI agent had:
+
+  | Flag | Meaning |
+  |---|---|
+  | `--promised "<where, who>"` | you committed to it |
+  | `--requested "<where, who>"` | someone asked you for it |
+  | `--suggested "<why>"` | an idea (often an agent's); nobody committed yet |
+
+  ```bash
+  taar create "Send Alex the API timings" --promised "standup, Alex, Nov 14"
+  taar update taar-4v0k9m2x --requested "Slack DM from Sara"   # works on existing todos too
+  taar list --label source:promised                            # what I promised, still open
+  ```
+
+  It adds a `source:<kind>` label and a dated line at the top of the notes:
+  `Source: promised · standup, Alex, Nov 14 (recorded 2026-11-15)`.
 
 #### Work on it
 
@@ -472,9 +489,9 @@ Your workspace repos are untouched. Projects linked with `taar init` keep their 
 | `taar remove <github-user>` | Remove access or cancel an invitation (`-y` skips confirmation) |
 | `taar pull` / `taar push` | Get / share changes |
 | `taar list` / `ready` / `search` / `count` | Scoped to the current project; `--all` for every project (required outside a linked project). `list` and `ready` show open todos (`list --closed` adds closed ones); `search` and `count` include closed todos |
-| `taar create "Title"` | New todo (auto-tagged with the project); `-p`, `-d` |
+| `taar create "Title"` | New todo (auto-tagged with the project); `-p`, `-d`, `--promised`/`--requested`/`--suggested "<where, who>"` |
 | `taar show <id>` | Full details, notes and history |
-| `taar update <id>` | `--claim`, `--append-notes`, `-p`, `--title`, `--add-label`, ... |
+| `taar update <id>` | `--claim`, `--append-notes`, `-p`, `--title`, `--add-label`, `--promised`/`--requested`/`--suggested`, ... |
 | `taar close <id>` | Finish a todo; `--reason` |
 | `taar agents [--remove]` | Add / remove global AI agent instructions (`taar upgrade` keeps installed ones current) |
 | `taar prime [--hook-json]` | Workflow briefing for AI agents |
